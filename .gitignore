@@ -1,0 +1,32 @@
+# Credenciais e segredos
+.env
+*.env
+secrets.json
+config.local.js
+token.txt
+
+# Documentos pessoais
+*.pdf
+
+# Guia local — não vai para o GitHub
+githubGuia.md
+
+# Planilhas de referência de projeto real — NÃO PUBLICAR.
+# Foram a origem dos modelos embutidos no app.js, mas carregam dados de cliente
+# (lista de material completa, nomes de projeto/documento, logotipos e nomes de
+# pessoas). Os modelos dentro do app.js já estão limpos; estes arquivos não.
+# A ferramenta NÃO precisa deles para rodar.
+*.xlsx
+
+# Dependências
+node_modules/
+vendor/
+
+# Arquivos de sistema
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+.cache/
