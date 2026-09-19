@@ -126,13 +126,15 @@ function normalizeText(s){
 function normalizeMaterial(s){
   return normalizeText(s).replace(/\s+Aço$/i, "").trim();
 }
-// `linha` é o número da linha de onde o item veio (planilha ou texto colado) — só serve para
-// o usuário reencontrar o item original na janela de itens de origem da seção 2.
-function buildRow(item, qtd, especificacao, descricao, material, massa, linha){
-  return {item, qtd, especificacao:normalizeText(especificacao), descricao:normalizeText(descricao), material:normalizeMaterial(material), massa, linha};
+// `linha` é o número da linha de onde o item veio e `fonte` é o nome da lista de onde ela foi
+// lida (o arquivo .xlsx, ou "texto colado") — juntos são o endereço do item original, mostrado
+// na janela de itens de origem da seção 2. `fonte` também é o que permite carregar VÁRIAS
+// listas de material na mesma consolidação e, depois, remover uma delas sem mexer nas outras.
+function buildRow(item, qtd, especificacao, descricao, material, massa, linha, fonte){
+  return {item, qtd, especificacao:normalizeText(especificacao), descricao:normalizeText(descricao), material:normalizeMaterial(material), massa, linha, fonte};
 }
 
-function parseRows(text){
+function parseRows(text, fonte){
   const lines = text.split(/\r\n|\r|\n/).filter(l=>l.trim().length>0);
   const parsed = [];
   const problems = [];
@@ -153,7 +155,7 @@ function parseRows(text){
     const qtd = toNumBR(qtdStr);
     const massa = toNumBR(massaStr);
     if(isNaN(qtd) || isNaN(massa)){ problems.push(`Linha ${i+1}: Qtd ou Massa não numérico — ignorada.`); continue; }
-    parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa, i+1));
+    parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa, i+1, fonte));
   }
   return {rows:parsed, problems};
 }
@@ -176,6 +178,7 @@ function groupRows(rows){
     g.origem.push({
       item: r.item==null ? "" : String(r.item),
       linha: r.linha,
+      fonte: r.fonte,
       especificacao: r.especificacao,
       descricao: r.descricao,
       material: r.material,
@@ -225,11 +228,12 @@ function expandToSourceRows(groups){
     applyTotalsToOrigem(g);
     const members = (g.origem && g.origem.length)
       ? g.origem
-      : [{item:"", linha:undefined, especificacao:g.especificacao, descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa}];
+      : [{item:"", linha:undefined, fonte:undefined, especificacao:g.especificacao, descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa}];
     for(const m of members){
       out.push({
         item: m.item || "",
         linha: m.linha,
+        fonte: m.fonte,
         especificacao: normalizeText(m.especificacao),
         descricao: normalizeText(m.descricao),
         material: normalizeMaterial(m.material),
@@ -485,7 +489,7 @@ function findFirstSheetPath(zipData){
   }
 }
 
-async function parseXlsxFile(arrayBuffer){
+async function parseXlsxFile(arrayBuffer, fonte){
   const zipData = await readZipEntries(arrayBuffer);
   if(!zipData["xl/workbook.xml"]) throw new Error("Não encontrei xl/workbook.xml — não parece ser uma planilha .xlsx válida.");
   const sharedStrings = parseSharedStrings(zipData["xl/sharedStrings.xml"]);
@@ -511,7 +515,7 @@ async function parseXlsxFile(arrayBuffer){
     const qtd = toNumBR(qtdRaw);
     const massa = toNumBR(massaRaw);
     if(isNaN(qtd) || isNaN(massa)){ problems.push(`Linha ${i+1} da planilha: Qtd ou Massa não numérico — ignorada.`); continue; }
-    parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa, i+1));
+    parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa, i+1, fonte));
   }
   return {rows:parsed, problems};
 }
@@ -1346,6 +1350,10 @@ const els = {
   processBtn: document.getElementById("processBtn"),
   clearBtn: document.getElementById("clearBtn"),
   xlsxInput: document.getElementById("xlsxInput"),
+  xlsxAddInput: document.getElementById("xlsxAddInput"),
+  addPasteBtn: document.getElementById("addPasteBtn"),
+  sourcesWrap: document.getElementById("sourcesWrap"),
+  sourcesList: document.getElementById("sourcesList"),
   parseStatus: document.getElementById("parseStatus"),
   groupedSection: document.getElementById("groupedSection"),
   groupedTable: document.getElementById("groupedTable"),
@@ -1415,7 +1423,10 @@ els.clearBtn.addEventListener("click", ()=>{
   els.extraStatus.textContent = "";
   els.pasteArea.value = "";
   els.xlsxInput.value = "";
+  els.xlsxAddInput.value = "";
   els.parseStatus.textContent = "";
+  els.sourcesWrap.hidden = true;
+  els.sourcesList.innerHTML = "";
   els.groupedSection.hidden = true;
   els.contentSection.hidden = true;
   els.chapasSection.hidden = true;
@@ -1464,27 +1475,107 @@ function renderCutSections(){
   applySectionVisibility();
 }
 
-function runPipeline(rows, problems, sourceLabel){
+// `append` = somar esta lista à que já está carregada, em vez de substituir. Somar parte das
+// LINHAS DE ORIGEM do que já existe (expandToSourceRows), então nada se perde no caminho: as
+// correções feitas à mão na seção 2 e os extras (%) continuam valendo, e itens iguais vindos de
+// arquivos diferentes se juntam num grupo só — que é o ponto de carregar mais de uma lista.
+function runPipeline(rows, problems, sourceLabel, append){
   if(rows.length===0){
     els.parseStatus.textContent = `Nenhuma linha válida encontrada em ${sourceLabel}. Confira as 6 colunas (Item, Qtd, Especificação, Descrição, Material, Massa).`;
     els.parseStatus.className = "status-msg err";
     return;
   }
-  const grouped = sortByDescricao(groupRows(rows));
+  const anteriores = append ? expandToSourceRows(lastGrouped) : [];
+  const todas = [...anteriores, ...rows];
+  const grouped = sortByDescricao(groupRows(todas));
   openOrigem.clear();
   lastGrouped = grouped;
-  // lista nova = extras zerados; a mensagem do extra da lista anterior não vale mais
-  els.extraStatus.textContent = "";
+  // lista nova = extras zerados; a mensagem do extra da lista anterior não vale mais. Somando
+  // uma lista às que já estavam carregadas, os extras vêm junto nas linhas de origem e ficam.
+  if(!append) els.extraStatus.textContent = "";
 
-  els.parseStatus.textContent = `${sourceLabel}: ${rows.length} linha(s) lida(s) → ${grouped.length} item(ns) agrupado(s).` + (problems.length ? `  ${problems.length} linha(s) ignorada(s).` : "");
+  els.parseStatus.textContent = append
+    ? `${sourceLabel}: +${rows.length} linha(s) — ${todas.length} no total → ${grouped.length} item(ns) agrupado(s).`
+    : `${sourceLabel}: ${rows.length} linha(s) lida(s) → ${grouped.length} item(ns) agrupado(s).`;
+  els.parseStatus.textContent += (problems.length ? `  ${problems.length} linha(s) ignorada(s).` : "");
   els.parseStatus.className = "status-msg ok";
 
   renderGroupedTable(lastGrouped);
   renderCutSections();
+  renderSources();
   els.contentSection.hidden = false;
   els.exportSection.hidden = false;
   els.previewPanel.hidden = true;
 }
+
+/* ---------------- listas de material carregadas (uma ou várias) ---------------- */
+// Não existe uma lista de "arquivos importados" guardada à parte: as fontes são deduzidas das
+// próprias linhas de origem, então elas nunca ficam fora de sincronia com o que está na tabela
+// (remover itens à mão, reagrupar ou limpar já atualiza a lista sozinho).
+const FONTE_MANUAL = "Adicionado à mão";
+// lê as linhas de origem direto (sem passar por expandToSourceRows, que rateia totais e por
+// isso não pode ser chamada durante um render), em ordem alfabética pra a lista não dançar.
+function currentSources(){
+  const map = new Map();
+  for(const g of lastGrouped){
+    const members = (g.origem && g.origem.length) ? g.origem : [{fonte:undefined}];
+    for(const m of members){
+      const f = m.fonte || FONTE_MANUAL;
+      map.set(f, (map.get(f)||0) + 1);
+    }
+  }
+  return [...map.entries()]
+    .map(([label, n])=>({label, n}))
+    .sort((a,b)=> a.label.localeCompare(b.label, "pt-BR", {sensitivity:"base"}));
+}
+// duas listas não podem dividir o mesmo nome (senão não dá pra remover uma sem a outra) — o
+// mesmo arquivo carregado duas vezes vira "lista.xlsx (2)". `extra` são nomes já reservados
+// nesta mesma leva de arquivos, que ainda não estão carregados.
+function uniqueSourceLabel(base, extra){
+  const usados = new Set(currentSources().map(s=>s.label));
+  if(extra) for(const e of extra) usados.add(e);
+  if(!usados.has(base)) return base;
+  let i = 2;
+  while(usados.has(`${base} (${i})`)) i++;
+  return `${base} (${i})`;
+}
+function renderSources(){
+  const fontes = currentSources();
+  els.sourcesWrap.hidden = !fontes.length;
+  els.sourcesList.innerHTML = fontes.map(s=>`
+    <span class="source-chip" data-source="${escapeHtml(s.label)}">
+      <b>${escapeHtml(s.label)}</b><span class="source-n">${s.n} linha(s)</span>
+      <button class="btn-icon" type="button" data-source-del title="Remover esta lista da consolidação">🗑</button>
+    </span>`).join("");
+}
+// tira da consolidação todas as linhas que vieram de uma lista, sem tocar nas outras
+els.sourcesList.addEventListener("click", (ev)=>{
+  const btn = ev.target.closest("button[data-source-del]");
+  if(!btn) return;
+  const label = btn.closest("[data-source]").dataset.source;
+  const restantes = expandToSourceRows(lastGrouped).filter(r=> (r.fonte || FONTE_MANUAL) !== label);
+  openOrigem.clear();
+  if(!restantes.length){
+    lastGrouped = [];
+    renderSources();
+    els.groupedSection.hidden = true;
+    els.contentSection.hidden = true;
+    els.chapasSection.hidden = true;
+    els.barrasSection.hidden = true;
+    els.exportSection.hidden = true;
+    els.previewPanel.hidden = true;
+    els.parseStatus.textContent = `"${label}" removida — não sobrou nenhuma lista carregada.`;
+    els.parseStatus.className = "status-msg";
+    return;
+  }
+  lastGrouped = sortByDescricao(groupRows(restantes));
+  renderGroupedTable(lastGrouped);
+  renderCutSections();
+  renderSources();
+  els.previewPanel.hidden = true;
+  els.parseStatus.textContent = `"${label}" removida — ${restantes.length} linha(s) restante(s) → ${lastGrouped.length} item(ns) agrupado(s).`;
+  els.parseStatus.className = "status-msg ok";
+});
 
 // reconstrói tudo (reclassificação chapa/perfil/outro, reagrupamento, seções 4/5, export) a
 // partir do estado atual da tabela da seção 2 — chamado depois que o usuário edita, adiciona
@@ -1513,6 +1604,7 @@ function reprocessGrouped(){
 
   renderGroupedTable(lastGrouped);
   renderCutSections();
+  renderSources();
   els.contentSection.hidden = false;
   els.exportSection.hidden = false;
   els.previewPanel.hidden = true;
@@ -1576,31 +1668,66 @@ function updateExtraSummary(){
   els.extraSummary.className = "extra-summary on";
 }
 
-els.processBtn.addEventListener("click", ()=>{
+// as duas entradas (colar e importar .xlsx) funcionam nos dois modos: SUBSTITUIR o que está
+// carregado, ou SOMAR à consolidação atual — é assim que mais de uma lista de material entra
+// no mesmo cálculo.
+function processarColagem(append){
   const text = els.pasteArea.value;
   if(!text.trim()){
     els.parseStatus.textContent = "Cole os dados da planilha antes de processar.";
     els.parseStatus.className = "status-msg err";
     return;
   }
-  const {rows, problems} = parseRows(text);
-  runPipeline(rows, problems, "texto colado");
-});
+  const fonte = append ? uniqueSourceLabel("Texto colado") : "Texto colado";
+  const {rows, problems} = parseRows(text, fonte);
+  runPipeline(rows, problems, append ? `"${fonte}"` : "texto colado", append);
+}
+els.processBtn.addEventListener("click", ()=> processarColagem(false));
+els.addPasteBtn.addEventListener("click", ()=> processarColagem(true));
 
-els.xlsxInput.addEventListener("change", async ()=>{
-  const file = els.xlsxInput.files[0];
-  if(!file) return;
-  els.parseStatus.textContent = `Lendo ${file.name}…`;
+// lê os arquivos escolhidos (o seletor aceita vários de uma vez) e junta tudo numa leitura só —
+// um arquivo ilegível não derruba os outros, só entra na lista de problemas.
+async function importarArquivos(input, append){
+  const files = [...input.files];
+  input.value = "";               // permite reescolher o mesmo arquivo depois
+  if(!files.length) return;
+  els.parseStatus.textContent = files.length===1 ? `Lendo ${files[0].name}…` : `Lendo ${files.length} arquivos…`;
   els.parseStatus.className = "status-msg";
-  try{
-    const buf = await file.arrayBuffer();
-    const {rows, problems} = await parseXlsxFile(buf);
-    runPipeline(rows, problems, `arquivo "${file.name}"`);
-  }catch(err){
-    els.parseStatus.textContent = "Não consegui ler o arquivo: " + (err && err.message ? err.message : err);
-    els.parseStatus.className = "status-msg err";
+
+  const rows = [], problems = [], lidos = [], repetidos = [];
+  // substituindo tudo, os nomes já carregados não contam (vão embora); somando, contam. Os
+  // arquivos desta mesma leva também precisam ser únicos entre si.
+  const usados = new Set(append ? currentSources().map(s=>s.label) : []);
+  for(const file of files){
+    try{
+      const buf = await file.arrayBuffer();
+      // o nome do arquivo é a "fonte" das linhas dele; nome repetido vira "(2)" pra as duas
+      // listas continuarem removíveis uma sem a outra
+      const fonte = uniqueSourceLabel(file.name, usados);
+      if(fonte !== file.name) repetidos.push(file.name);
+      usados.add(fonte);
+      const r = await parseXlsxFile(buf, fonte);
+      rows.push(...r.rows);
+      problems.push(...r.problems);
+      lidos.push(file.name);
+    }catch(err){
+      problems.push(`${file.name}: ${err && err.message ? err.message : err}`);
+    }
   }
-});
+
+  if(!rows.length){
+    els.parseStatus.textContent = "Não consegui ler nenhuma linha: " + problems.join(" | ");
+    els.parseStatus.className = "status-msg err";
+    return;
+  }
+  const label = lidos.length===1 ? `arquivo "${lidos[0]}"` : `${lidos.length} arquivos (${lidos.join(", ")})`;
+  runPipeline(rows, problems, label, append);
+  if(repetidos.length){
+    els.parseStatus.textContent += `  Atenção: ${[...new Set(repetidos)].join(", ")} apareceu(ram) mais de uma vez — as linhas foram somadas de novo, e a lista repetida entrou como "(2)" em "Listas carregadas" (dá pra remover ali).`;
+  }
+}
+els.xlsxInput.addEventListener("change", ()=> importarArquivos(els.xlsxInput, false));
+els.xlsxAddInput.addEventListener("change", ()=> importarArquivos(els.xlsxAddInput, true));
 
 let downloadsCap = null;
 async function initDownloads(){
@@ -2020,12 +2147,15 @@ function renderOrigemPanel(g, idx){
     </div>`;
   }
 
+  // com mais de uma lista carregada, o número da linha sozinho é ambíguo (a linha 12 existe em
+  // todas elas) — aí o nome da lista aparece junto, embaixo.
+  const multi = currentSources().length > 1;
   const rows = members.map((m,oi)=>{
     const differs = normalizeText(m.especificacao)!==normalizeText(g.especificacao)
       || normalizeText(m.descricao)!==normalizeText(g.descricao)
       || normalizeMaterial(m.material)!==normalizeMaterial(g.material);
     return `<tr data-oidx="${oi}">
-      <td class="origem-src" title="Linha de onde este item foi lido">${m.linha ? "L"+m.linha : "—"}</td>
+      <td class="origem-src" title="${escapeHtml((m.fonte || FONTE_MANUAL) + (m.linha ? ", linha "+m.linha : ""))}">${m.linha ? "L"+m.linha : "—"}${multi ? `<div class="origem-fonte">${escapeHtml(m.fonte || FONTE_MANUAL)}</div>` : ""}</td>
       <td><input class="cell-input" data-ofield="item" value="${escapeHtml(m.item||"")}"></td>
       <td><input class="cell-input" data-ofield="especificacao" value="${escapeHtml(m.especificacao||"")}"></td>
       <td><input class="cell-input" data-ofield="descricao" value="${escapeHtml(m.descricao||"")}"></td>
@@ -2229,7 +2359,7 @@ els.groupedTable.addEventListener("click", (ev)=>{
     // a primeira linha de origem de um item criado à mão herda o total dele (senão o item
     // agrupado zeraria ao passar a somar as origens)
     g.origem.push({
-      item:"", linha:undefined,
+      item:"", linha:undefined, fonte:undefined,
       especificacao:g.especificacao, descricao:g.descricao, material:g.material,
       qtd: primeiro ? (Number(g.qtd)||0) : 0,
       massa: primeiro ? (Number(g.massa)||0) : 0,
@@ -2258,6 +2388,7 @@ els.groupedTable.addEventListener("click", (ev)=>{
   lastGrouped.splice(idx, 1);
   openOrigem.clear();
   renderGroupedTable(lastGrouped);
+  renderSources();
 });
 
 els.groupedToggleBtn.addEventListener("click", ()=>{

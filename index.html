@@ -31,16 +31,25 @@
 
   <section class="block">
     <h2>1 · Lista de materiais</h2>
-    <p class="help">Copie as colunas <b>Item, Qtd, Especificação, Descrição, Material, Massa</b> de uma planilha (Excel/Sheets) — nessa ordem — e cole no campo abaixo (Ctrl+V), ou importe o arquivo <b>.xlsx</b> direto. A primeira linha pode ser o cabeçalho, tanto faz.</p>
+    <p class="help">Copie as colunas <b>Item, Qtd, Especificação, Descrição, Material, Massa</b> de uma planilha (Excel/Sheets) — nessa ordem — e cole no campo abaixo (Ctrl+V), ou importe o arquivo <b>.xlsx</b> direto. A primeira linha pode ser o cabeçalho, tanto faz. <b>Mais de uma lista de material</b> pode ser carregada na mesma consolidação: escolha vários arquivos de uma vez, ou use os botões <b>➕ Somar</b> para juntar outra lista à que já está aberta — itens iguais vindos de arquivos diferentes viram um item só, com as quantidades somadas.</p>
     <textarea id="pasteArea" placeholder="Cole aqui os dados copiados da planilha..."></textarea>
     <div class="row-actions">
       <button class="btn-primary" id="processBtn" type="button">Processar lista colada</button>
-      <label class="btn-secondary" id="xlsxLabel" style="cursor:pointer;">
-        📂 Importar arquivo .xlsx
-        <input type="file" id="xlsxInput" accept=".xlsx" style="display:none;">
+      <button class="btn-secondary" id="addPasteBtn" type="button" title="Soma o que está colado acima à consolidação atual, sem apagar as listas já carregadas.">➕ Somar lista colada</button>
+      <label class="btn-secondary" id="xlsxLabel" style="cursor:pointer;" title="Substitui tudo o que está carregado. Dá pra escolher vários arquivos de uma vez.">
+        📂 Importar arquivo(s) .xlsx
+        <input type="file" id="xlsxInput" accept=".xlsx" multiple style="display:none;">
+      </label>
+      <label class="btn-secondary" id="xlsxAddLabel" style="cursor:pointer;" title="Soma outra(s) lista(s) à consolidação atual, sem apagar as já carregadas.">
+        ➕ Somar arquivo(s) .xlsx
+        <input type="file" id="xlsxAddInput" accept=".xlsx" multiple style="display:none;">
       </label>
       <button class="btn-secondary" id="clearBtn" type="button">Limpar</button>
       <span class="status-msg" id="parseStatus"></span>
+    </div>
+    <div id="sourcesWrap" class="sources-wrap" hidden>
+      <span class="sources-label">Listas carregadas</span>
+      <div id="sourcesList" class="sources-list"></div>
     </div>
   </section>
 
