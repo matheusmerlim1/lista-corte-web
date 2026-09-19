@@ -136,11 +136,68 @@
   input.cell-input:hover{border-color:var(--border);}
   input.cell-input:focus{border-color:var(--accent); background:var(--surface);}
   input.cell-input.num{font-family:"IBM Plex Mono",monospace; text-align:right;}
+  /* coluna "Extra %" / "Qtd final" da tabela de itens agrupados */
+  input.cell-input.num.extra{width:58px; min-width:0; margin-left:auto; display:block;}
+  .extra-final{font-family:"IBM Plex Mono",monospace; font-size:13px;}
+  .extra-final.off{color:var(--muted);}
+  .extra-final.on{color:var(--good); font-weight:700;}
+  .extra-hint{
+    font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--muted);
+    white-space:nowrap; margin-top:1px;
+  }
+
   .btn-icon{
     flex:none; padding:4px 8px; border-radius:100px; border:1px solid var(--border); background:var(--surface);
     color:var(--muted); font-size:12px; cursor:pointer; line-height:1;
   }
   .btn-icon:hover{border-color:var(--bad); color:var(--bad);}
+
+  /* ações no fim de cada linha da tabela (ver origem / remover) */
+  .cell-actions{display:flex; align-items:center; gap:6px; justify-content:flex-end;}
+  /* botão que abre a janela de itens de origem — não é destrutivo, então não fica vermelho no hover */
+  .btn-icon.btn-origem{font-family:"IBM Plex Mono",monospace; white-space:nowrap;}
+  .btn-icon.btn-origem:hover{border-color:var(--accent); color:var(--accent);}
+  .btn-icon.btn-origem.open{background:var(--accent-soft); color:var(--accent-ink); border-color:var(--accent);}
+
+  /* janela ("gaveta") de itens de origem, aberta logo abaixo da linha do item agrupado */
+  tr.has-origem-open > td{background:var(--surface-2);}
+  tr.origem-row:hover > td, tr.origem-row > td{background:var(--surface-2); padding:0 10px 12px;}
+  .origem-panel{
+    background:var(--surface); border:1px solid var(--accent); border-radius:9px;
+    padding:12px 14px; box-shadow:0 6px 18px rgba(0,0,0,.08);
+  }
+  .origem-head{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:10px;}
+  .origem-head .origem-title{font-size:13px;}
+  .origem-head .origem-sub{font-size:12px; color:var(--muted);}
+  .origem-head .btn-toggle{margin-left:auto;}
+  .origem-empty{font-size:12.5px; color:var(--muted); margin:0 0 12px; max-width:80ch; line-height:1.6;}
+  table.origem-table{font-size:12.5px;}
+  table.origem-table th{padding:6px 8px;}
+  table.origem-table td{padding:5px 8px; border-bottom:1px dashed var(--border);}
+  table.origem-table tr:hover td{background:var(--surface-2);}
+  table.origem-table td.origem-src{
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--muted); white-space:nowrap; padding-top:11px;
+  }
+  .origem-foot{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:10px;}
+  .origem-foot .origem-sum{font-size:12.5px; color:var(--muted); font-family:"IBM Plex Mono",monospace;}
+  .origem-foot .btn-secondary{margin-left:auto;}
+
+  /* barra do extra (% a mais), no topo da seção de itens agrupados */
+  .extra-bar{
+    background:var(--surface-2); border:1px solid var(--border); border-radius:9px;
+    padding:14px 16px; margin-bottom:16px;
+  }
+  .extra-bar-head{
+    display:flex; align-items:baseline; justify-content:space-between;
+    gap:12px; flex-wrap:wrap; margin-bottom:6px;
+  }
+  .extra-bar-head h3{font-size:16px; font-weight:700;}
+  .extra-bar .help{margin-top:0; max-width:95ch;}
+  .extra-summary{font-size:12.5px; color:var(--muted);}
+  .extra-summary.on{
+    color:var(--good); font-weight:600; background:var(--good-soft);
+    padding:2px 10px; border-radius:100px;
+  }
 
   .preview-page{margin-bottom:18px;}
   .preview-page h4{

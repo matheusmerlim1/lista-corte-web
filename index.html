@@ -49,8 +49,32 @@
       <h2>2 · Itens agrupados</h2>
       <button class="btn-toggle" type="button" id="groupedToggleBtn">▾ Minimizar</button>
     </div>
-    <p class="help">Itens com a mesma especificação, descrição e material foram somados (quantidade e massa) e ordenados alfabeticamente pela descrição. Qualquer célula pode ser editada direto na tabela — corrija um dado errado, adicione um item que não veio na lista colada, ou apague um item, e clique em <b>↻ Reagrupar</b> para o item corrigido se juntar a um grupo existente (ex.: dois grupos com a mesma descrição só porque o material foi digitado diferente).</p>
+    <p class="help">Itens com a mesma especificação, descrição e material foram somados (quantidade e massa) e ordenados alfabeticamente pela descrição. Qualquer célula pode ser editada direto na tabela — corrija um dado errado, adicione um item que não veio na lista colada, ou apague um item, e clique em <b>↻ Reagrupar</b> para o item corrigido se juntar a um grupo existente (ex.: dois grupos com a mesma descrição só porque o material foi digitado diferente). O botão <b>⧉</b> de cada linha (com o número de itens somados nela) abre, logo abaixo, a janela com <b>todas as linhas de origem que formaram aquele item agrupado</b> — cada uma editável por conta própria: corrija ali só a linha errada e ela migra sozinha para o grupo certo no próximo <b>↻ Reagrupar</b>. A coluna <b>Extra %</b> acrescenta uma porcentagem à quantidade já consolidada daquele item (folga de obra) — a <b>Qtd final</b> ao lado é a que sai em tudo o que a ferramenta gera.</p>
     <div id="groupedBody">
+      <div class="extra-bar">
+        <div class="extra-bar-head">
+          <h3>Extra (%) — quantidade a mais</h3>
+          <span class="extra-summary" id="extraSummary">Nenhum extra aplicado — as quantidades exportadas são as consolidadas.</span>
+        </div>
+        <p class="help" style="margin-bottom:12px;">Com a lista já consolidada, dá pra pedir uma folga a mais de cada item: deu <b>100 parafusos</b>, com <b>10%</b> de extra vira <b>110</b>. Ajuste item a item na coluna <b>Extra %</b> da tabela, ou aplique de uma vez ao grupo escolhido aqui. A <b>Qtd final</b> (e a massa, na mesma proporção) é a que entra na otimização de corte, na pré-visualização e em todas as exportações — quantidade inteira é sempre arredondada para cima.</p>
+        <div class="group-controls" style="margin-bottom:0; align-items:flex-end;">
+          <div>
+            <label for="extraPctInput">Percentual</label><br>
+            <input type="number" id="extraPctInput" class="edit-num" min="0" step="0.5" value="10">
+          </div>
+          <div>
+            <label for="extraScopeSel">Aplicar a</label><br>
+            <select id="extraScopeSel">
+              <option value="todos">Todos os itens agrupados</option>
+              <option value="outro">Somente itens soltos (parafusos, arruelas, curvas...)</option>
+              <option value="cortavel">Somente itens cortáveis (chapas, perfis/tubos)</option>
+            </select>
+          </div>
+          <button class="btn-secondary" id="extraApplyBtn" type="button">+ Aplicar extra</button>
+          <button class="btn-secondary" id="extraClearBtn" type="button" title="Zera o extra dos itens do grupo escolhido em &quot;Aplicar a&quot;.">Zerar extra</button>
+          <span class="status-msg" id="extraStatus"></span>
+        </div>
+      </div>
       <div class="table-wrap">
         <table class="data-table" id="groupedTable"></table>
       </div>

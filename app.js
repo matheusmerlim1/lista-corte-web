@@ -54,6 +54,46 @@ function sortByDescricao(rows){
   return [...rows].sort((a,b)=> String(a.descricao||"").localeCompare(String(b.descricao||""), "pt-BR", {sensitivity:"base"}));
 }
 
+/* ---------------- extra (% a mais) por item agrupado ---------------- */
+// Depois que a lista está consolidada, cada item agrupado pode levar uma porcentagem a mais —
+// a folga/perda de obra que se compra junto: deu 100 parafusos, com 10% de extra viram 110.
+// O percentual mora no próprio grupo (`extraPct`) e nada é somado na Qtd editável: `lastGrouped`
+// continua guardando os valores BASE (os que a pessoa edita na seção 2) e a quantidade final é
+// calculada na hora por quem precisa dela. Todo o resto da ferramenta (otimização de corte,
+// pré-visualização e exportações) consome cópias dos grupos já com o extra embutido — ver
+// groupsWithExtra().
+function extraPctOf(g){
+  const p = Number(g && g.extraPct);
+  return isFinite(p) ? p : 0;
+}
+// quantidade base + extra. Quantidade inteira (o caso normal: 100 parafusos) é arredondada
+// PARA CIMA — não dá pra comprar 107,5 parafusos, e arredondar pra baixo comeria justamente a
+// folga que a pessoa acabou de pedir. Quantidade já fracionária (resultado de um rateio entre
+// linhas de origem) continua fracionária, com 2 casas.
+function qtdComExtra(qtd, pct){
+  const base = Number(qtd)||0;
+  const p = Number(pct)||0;
+  if(!p) return base;
+  const v = Math.max(0, base * (1 + p/100));
+  return Number.isInteger(base) ? Math.ceil(v - 1e-9) : Math.round(v*100)/100;
+}
+// a massa acompanha a quantidade na mesma proporção — 10% de peças a mais pesam 10% a mais.
+function massaComExtra(g){
+  const base = Number(g.qtd)||0;
+  const massa = Number(g.massa)||0;
+  const pct = extraPctOf(g);
+  if(!pct) return massa;
+  if(base>0) return massa * (qtdComExtra(base, pct) / base);
+  return massa * (1 + pct/100);
+}
+// cópia do grupo com Qtd/Massa já somadas do extra (sem extra, devolve o próprio grupo)
+function groupWithExtra(g){
+  const pct = extraPctOf(g);
+  if(!pct) return g;
+  return {...g, qtd: qtdComExtra(g.qtd, pct), massa: massaComExtra(g)};
+}
+function groupsWithExtra(list){ return list.map(groupWithExtra); }
+
 /* ---------------- parsing da colagem (Excel) ---------------- */
 // linhas "vazias" (sem especificação real) ou marcadas como esboço/placeholder são
 // descartadas silenciosamente — não são um erro, são estrutura da planilha (cabeçalhos de
@@ -86,8 +126,10 @@ function normalizeText(s){
 function normalizeMaterial(s){
   return normalizeText(s).replace(/\s+Aço$/i, "").trim();
 }
-function buildRow(item, qtd, especificacao, descricao, material, massa){
-  return {item, qtd, especificacao:normalizeText(especificacao), descricao:normalizeText(descricao), material:normalizeMaterial(material), massa};
+// `linha` é o número da linha de onde o item veio (planilha ou texto colado) — só serve para
+// o usuário reencontrar o item original na janela de itens de origem da seção 2.
+function buildRow(item, qtd, especificacao, descricao, material, massa, linha){
+  return {item, qtd, especificacao:normalizeText(especificacao), descricao:normalizeText(descricao), material:normalizeMaterial(material), massa, linha};
 }
 
 function parseRows(text){
@@ -111,21 +153,95 @@ function parseRows(text){
     const qtd = toNumBR(qtdStr);
     const massa = toNumBR(massaStr);
     if(isNaN(qtd) || isNaN(massa)){ problems.push(`Linha ${i+1}: Qtd ou Massa não numérico — ignorada.`); continue; }
-    parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa));
+    parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa, i+1));
   }
   return {rows:parsed, problems};
 }
 
+// cada grupo guarda em `origem` uma cópia de todas as linhas que entraram nele — é o que a
+// janela "itens de origem" da seção 2 mostra e deixa editar. As linhas de origem são a fonte
+// da verdade de Qtd/Massa: o total do grupo é sempre a soma delas.
 function groupRows(rows){
   const map = new Map();
   for(const r of rows){
     const key = [r.especificacao, r.descricao, r.material].join("||");
-    if(!map.has(key)) map.set(key, {especificacao:r.especificacao, descricao:r.descricao, material:r.material, qtd:0, massa:0});
+    if(!map.has(key)) map.set(key, {especificacao:r.especificacao, descricao:r.descricao, material:r.material, qtd:0, massa:0, extraPct:0, origem:[]});
     const g = map.get(key);
     g.qtd += r.qtd;
     g.massa += r.massa;
+    // o extra (% a mais) viaja junto com as linhas de origem, pra não se perder num ↻ Reagrupar
+    // feito depois de uma correção. Quando linhas com extras diferentes caem no mesmo grupo,
+    // vale o maior — é o único critério que não derruba sozinho uma folga já pedida.
+    g.extraPct = Math.max(extraPctOf(g), Number(r.extraPct)||0);
+    g.origem.push({
+      item: r.item==null ? "" : String(r.item),
+      linha: r.linha,
+      especificacao: r.especificacao,
+      descricao: r.descricao,
+      material: r.material,
+      qtd: r.qtd,
+      massa: r.massa,
+    });
   }
   return [...map.values()];
+}
+
+function sumOrigem(g, field){
+  if(!g.origem || !g.origem.length) return null;
+  return g.origem.reduce((a,m)=> a + (Number(m[field])||0), 0);
+}
+// o total do grupo "bate" com a soma das linhas de origem? (tolerância pra ponto flutuante)
+function origemMatchesTotals(g){
+  if(!g.origem || !g.origem.length) return true;
+  return Math.abs(sumOrigem(g,"qtd") - (Number(g.qtd)||0)) < 1e-6
+      && Math.abs(sumOrigem(g,"massa") - (Number(g.massa)||0)) < 1e-6;
+}
+// põe as linhas de origem de acordo com o total do grupo — usado quando a pessoa edita a Qtd
+// (ou a Massa) direto na linha agrupada, que é um total, não um valor de uma linha só.
+// Com uma linha de origem só (ou soma zero) o total vai inteiro pra primeira; com várias, é
+// distribuído proporcionalmente ao que cada uma já representava.
+function applyTotalsToOrigem(g){
+  if(!g.origem || !g.origem.length) return false;
+  let changed = false;
+  for(const field of ["qtd","massa"]){
+    const sum = sumOrigem(g, field);
+    const target = Number(g[field])||0;
+    if(Math.abs(sum - target) < 1e-6) continue;
+    changed = true;
+    if(g.origem.length===1 || sum===0){
+      g.origem.forEach((m,i)=>{ m[field] = i===0 ? target : 0; });
+    } else {
+      const k = target / sum;
+      g.origem.forEach(m=>{ m[field] = (Number(m[field])||0) * k; });
+    }
+  }
+  return changed;
+}
+// desmonta os grupos de volta em linhas soltas (as de origem), pra reagrupar do zero. Grupo
+// sem origem (linha criada à mão na seção 2) vira uma linha só, com os próprios valores.
+function expandToSourceRows(groups){
+  const out = [];
+  for(const g of groups){
+    applyTotalsToOrigem(g);
+    const members = (g.origem && g.origem.length)
+      ? g.origem
+      : [{item:"", linha:undefined, especificacao:g.especificacao, descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa}];
+    for(const m of members){
+      out.push({
+        item: m.item || "",
+        linha: m.linha,
+        especificacao: normalizeText(m.especificacao),
+        descricao: normalizeText(m.descricao),
+        material: normalizeMaterial(m.material),
+        qtd: Number(m.qtd)||0,
+        massa: Number(m.massa)||0,
+        // o extra é do grupo, não da linha; cada linha leva uma cópia só pra sobreviver ao
+        // reagrupamento (inclusive quando a linha migra sozinha pra outro grupo)
+        extraPct: extraPctOf(g),
+      });
+    }
+  }
+  return out;
 }
 
 /* ---------------- interpretação da descrição (espessura / dimensões / diâmetro) ---------------- */
@@ -395,7 +511,7 @@ async function parseXlsxFile(arrayBuffer){
     const qtd = toNumBR(qtdRaw);
     const massa = toNumBR(massaRaw);
     if(isNaN(qtd) || isNaN(massa)){ problems.push(`Linha ${i+1} da planilha: Qtd ou Massa não numérico — ignorada.`); continue; }
-    parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa));
+    parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa, i+1));
   }
   return {rows:parsed, problems};
 }
@@ -968,7 +1084,7 @@ function buildConsolidadoCortavelRows(){
   ]);
 }
 function buildConsolidadoOutroRows(){
-  return sortByDescricao(lastGrouped.filter(isLooseOrUnclassified).map(g=>{
+  return sortByDescricao(groupsWithExtra(lastGrouped).filter(isLooseOrUnclassified).map(g=>{
     const label = `${g.especificacao} ${g.descricao}`.trim();
     return {especificacao: label, descricao: label, area: null, comprimento: null, material: g.material, qty: Math.round(g.qtd*100)/100};
   }));
@@ -1236,6 +1352,12 @@ const els = {
   groupedBody: document.getElementById("groupedBody"),
   groupedToggleBtn: document.getElementById("groupedToggleBtn"),
   addGroupedRowBtn: document.getElementById("addGroupedRowBtn"),
+  extraPctInput: document.getElementById("extraPctInput"),
+  extraScopeSel: document.getElementById("extraScopeSel"),
+  extraApplyBtn: document.getElementById("extraApplyBtn"),
+  extraClearBtn: document.getElementById("extraClearBtn"),
+  extraSummary: document.getElementById("extraSummary"),
+  extraStatus: document.getElementById("extraStatus"),
   reprocessBtn: document.getElementById("reprocessBtn"),
   exportXlsxBtn: document.getElementById("exportXlsxBtn"),
   exportStatus: document.getElementById("exportStatus"),
@@ -1288,6 +1410,9 @@ let chapasHasData = false;
 let barrasHasData = false;
 
 els.clearBtn.addEventListener("click", ()=>{
+  openOrigem.clear();
+  lastGrouped = [];
+  els.extraStatus.textContent = "";
   els.pasteArea.value = "";
   els.xlsxInput.value = "";
   els.parseStatus.textContent = "";
@@ -1329,6 +1454,16 @@ els.pageModeSel.addEventListener("change", ()=>{ updateFormatOptsVisibility(); e
 els.pageSizeInput.addEventListener("input", ()=>{ els.previewPanel.hidden = true; });
 updateFormatOptsVisibility();
 
+// as seções 4/5 (otimização de corte) trabalham com os grupos JÁ com o extra (% a mais)
+// embutido — é a quantidade que vai ser comprada de verdade, então é ela que decide quantas
+// chapas/barras comerciais são necessárias.
+function renderCutSections(){
+  const comExtra = groupsWithExtra(lastGrouped);
+  renderChapasSection(comExtra);
+  renderBarrasSection(comExtra);
+  applySectionVisibility();
+}
+
 function runPipeline(rows, problems, sourceLabel){
   if(rows.length===0){
     els.parseStatus.textContent = `Nenhuma linha válida encontrada em ${sourceLabel}. Confira as 6 colunas (Item, Qtd, Especificação, Descrição, Material, Massa).`;
@@ -1336,15 +1471,16 @@ function runPipeline(rows, problems, sourceLabel){
     return;
   }
   const grouped = sortByDescricao(groupRows(rows));
+  openOrigem.clear();
   lastGrouped = grouped;
+  // lista nova = extras zerados; a mensagem do extra da lista anterior não vale mais
+  els.extraStatus.textContent = "";
 
   els.parseStatus.textContent = `${sourceLabel}: ${rows.length} linha(s) lida(s) → ${grouped.length} item(ns) agrupado(s).` + (problems.length ? `  ${problems.length} linha(s) ignorada(s).` : "");
   els.parseStatus.className = "status-msg ok";
 
   renderGroupedTable(lastGrouped);
-  renderChapasSection(lastGrouped);
-  renderBarrasSection(lastGrouped);
-  applySectionVisibility();
+  renderCutSections();
   els.contentSection.hidden = false;
   els.exportSection.hidden = false;
   els.previewPanel.hidden = true;
@@ -1356,15 +1492,11 @@ function runPipeline(rows, problems, sourceLabel){
 // especificação/descrição se juntarem quando a correção fizer o material (ou outro campo)
 // bater entre eles.
 function reprocessGrouped(){
-  const cleaned = lastGrouped
-    .map(g=>({
-      especificacao: normalizeText(g.especificacao),
-      descricao: normalizeText(g.descricao),
-      material: normalizeMaterial(g.material),
-      qtd: Number(g.qtd)||0,
-      massa: Number(g.massa)||0,
-    }))
-    .filter(g=> g.especificacao || g.descricao);
+  // reagrupa a partir das LINHAS DE ORIGEM (as da janela "itens de origem"), não dos totais
+  // já somados — assim uma linha de origem corrigida individualmente migra sozinha para o
+  // grupo certo, em vez de arrastar o grupo inteiro junto.
+  const cleaned = expandToSourceRows(lastGrouped)
+    .filter(r=> r.especificacao || r.descricao);
 
   if(!cleaned.length){
     els.parseStatus.textContent = "Nenhum item com Especificação ou Descrição preenchida — nada para reagrupar.";
@@ -1373,15 +1505,14 @@ function reprocessGrouped(){
   }
 
   const before = lastGrouped.length;
+  openOrigem.clear();
   lastGrouped = sortByDescricao(groupRows(cleaned));
 
-  els.parseStatus.textContent = `Reagrupado: ${cleaned.length} item(ns) → ${lastGrouped.length} grupo(s)` + (before!==lastGrouped.length ? ` (era ${before}).` : ".");
+  els.parseStatus.textContent = `Reagrupado: ${cleaned.length} linha(s) de origem → ${lastGrouped.length} grupo(s)` + (before!==lastGrouped.length ? ` (era ${before}).` : ".");
   els.parseStatus.className = "status-msg ok";
 
   renderGroupedTable(lastGrouped);
-  renderChapasSection(lastGrouped);
-  renderBarrasSection(lastGrouped);
-  applySectionVisibility();
+  renderCutSections();
   els.contentSection.hidden = false;
   els.exportSection.hidden = false;
   els.previewPanel.hidden = true;
@@ -1389,7 +1520,7 @@ function reprocessGrouped(){
 els.reprocessBtn.addEventListener("click", reprocessGrouped);
 
 els.addGroupedRowBtn.addEventListener("click", ()=>{
-  lastGrouped.push({especificacao:"", descricao:"", material:"", qtd:0, massa:0});
+  lastGrouped.push({especificacao:"", descricao:"", material:"", qtd:0, massa:0, extraPct:0, origem:[]});
   renderGroupedTable(lastGrouped);
   els.groupedSection.hidden = false;
   els.groupedBody.hidden = false;
@@ -1397,6 +1528,53 @@ els.addGroupedRowBtn.addEventListener("click", ()=>{
   const inputs = els.groupedTable.querySelectorAll(`tr[data-idx="${lastGrouped.length-1}"] input`);
   if(inputs[0]) inputs[0].focus();
 });
+
+/* ---------------- extra (% a mais): controle global da seção 2 ---------------- */
+// numa lista longa ninguém vai digitar o mesmo percentual linha a linha — aqui ele é aplicado
+// de uma vez só ao grupo escolhido (todos / só os soltos / só os cortáveis). A coluna
+// "Extra %" da tabela continua valendo para ajustar um item específico depois.
+function groupsInExtraScope(scope){
+  if(scope==="outro") return lastGrouped.filter(isLooseOrUnclassified);
+  if(scope==="cortavel") return lastGrouped.filter(g=>!isLooseOrUnclassified(g));
+  return lastGrouped;
+}
+function applyExtraToScope(pct){
+  if(!lastGrouped.length) return;
+  const scope = els.extraScopeSel.value;
+  const alvos = groupsInExtraScope(scope);
+  alvos.forEach(g=>{ g.extraPct = pct; });
+  renderGroupedTable(lastGrouped);
+  renderCutSections();
+  els.previewPanel.hidden = true;
+  const nome = scope==="outro" ? "item(ns) solto(s)"
+    : scope==="cortavel" ? "item(ns) cortável(is)"
+    : "item(ns) agrupado(s)";
+  els.extraStatus.textContent = pct
+    ? `Extra de ${fmtPct(pct)}% aplicado em ${alvos.length} ${nome}.`
+    : `Extra zerado em ${alvos.length} ${nome}.`;
+  els.extraStatus.className = "status-msg ok";
+}
+els.extraApplyBtn.addEventListener("click", ()=>{
+  const pct = toNumBR(els.extraPctInput.value);
+  applyExtraToScope(isNaN(pct) ? 0 : pct);
+});
+els.extraClearBtn.addEventListener("click", ()=> applyExtraToScope(0));
+
+// resumo no topo da seção 2: quantos itens estão com extra e quanto isso muda no total
+function updateExtraSummary(){
+  if(!els.extraSummary) return;
+  const comExtra = lastGrouped.filter(g=>extraPctOf(g)!==0);
+  if(!comExtra.length){
+    els.extraSummary.textContent = "Nenhum extra aplicado — as quantidades exportadas são as consolidadas.";
+    els.extraSummary.className = "extra-summary";
+    return;
+  }
+  const base = comExtra.reduce((s,g)=> s + (Number(g.qtd)||0), 0);
+  const fim = comExtra.reduce((s,g)=> s + qtdComExtra(g.qtd, extraPctOf(g)), 0);
+  const d = fim - base;
+  els.extraSummary.textContent = `Extra em ${comExtra.length} de ${lastGrouped.length} item(ns): ${fmtQtd(base)} → ${fmtQtd(fim)} un (${d>=0?"+":"−"}${fmtQtd(Math.abs(d))}).`;
+  els.extraSummary.className = "extra-summary on";
+}
 
 els.processBtn.addEventListener("click", ()=>{
   const text = els.pasteArea.value;
@@ -1487,7 +1665,7 @@ async function saveFile(filename, data, statusEl){
 
 els.exportXlsxBtn.addEventListener("click", ()=>{
   if(!lastGrouped.length) return;
-  const blob = buildXlsxWorkbookBlob([buildListaCompactadaSheet(lastGrouped), buildResumoCorteSheet()]);
+  const blob = buildXlsxWorkbookBlob([buildListaCompactadaSheet(groupsWithExtra(lastGrouped)), buildResumoCorteSheet()]);
   saveFile("lista_compactada.xlsx", blob, els.exportStatus);
 });
 
@@ -1498,7 +1676,7 @@ els.exportXlsxBtn.addEventListener("click", ()=>{
 // lista compactada ("lista simples") — todos os itens, sem otimização, em ordem alfabética
 // por descrição.
 function contentRowsCompactada(){
-  return sortByDescricao(lastGrouped.map(g=>({especificacao:g.especificacao, descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa})));
+  return sortByDescricao(groupsWithExtra(lastGrouped).map(g=>({especificacao:g.especificacao, descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa})));
 }
 // itens que não são chapa nem barra/tubo (parafusos, arruelas, curvas, grades etc.) — a
 // categoria "Outro", que não entra na otimização de corte mas ainda precisa aparecer numa
@@ -1506,7 +1684,7 @@ function contentRowsCompactada(){
 // Também sai em ordem alfabética por descrição — é a mesma lista usada dentro da lista
 // consolidada e do resumo de corte.
 function contentRowsOutro(){
-  return sortByDescricao(lastGrouped
+  return sortByDescricao(groupsWithExtra(lastGrouped)
     .filter(isLooseOrUnclassified)
     .map(g=>({especificacao:g.especificacao, descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa})));
 }
@@ -1628,8 +1806,14 @@ els.previewBtn.addEventListener("click", ()=>{
   const format = els.exportFormatSel.value;
   const sections = buildPreviewSections(content, format);
   const total = sections.reduce((s,sec)=>s+sec.rows.length, 0);
+  // a prévia mostra a quantidade final (já com o extra) — deixa isso explícito pra ninguém
+  // achar que está vendo a quantidade consolidada "crua"
+  const nExtra = lastGrouped.filter(g=>extraPctOf(g)!==0).length;
+  const notaExtra = nExtra
+    ? `<p class="help" style="margin-bottom:12px;">As quantidades abaixo já incluem o <b>extra (%)</b> aplicado em ${nExtra} item(ns) na seção 2.</p>`
+    : "";
   els.previewBody.innerHTML = total
-    ? sections.map(s=>renderPreviewSection(s.label, s.rows)).join("")
+    ? notaExtra + sections.map(s=>renderPreviewSection(s.label, s.rows)).join("")
     : `<p class="help">Nada para pré-visualizar com essa combinação de conteúdo.</p>`;
   els.previewPanel.hidden = false;
   if(typeof els.previewPanel.scrollIntoView === "function") els.previewPanel.scrollIntoView({behavior:"smooth", block:"start"});
@@ -1738,43 +1922,180 @@ els.exportFinalBtn.addEventListener("click", async ()=>{
 // reagrupamento em si (reclassificar, juntar grupos que passaram a bater) só acontece quando
 // o usuário clica em "↻ Reagrupar", pra não ficar reordenando a tabela embaixo do cursor
 // enquanto a pessoa ainda está digitando.
+//
+// O botão "⧉ N" de cada linha abre, logo abaixo dela, a janela com as N linhas de origem que
+// foram somadas naquele item agrupado — também editáveis, uma a uma (ver renderOrigemPanel).
+const openOrigem = new Set();   // índices (em lastGrouped) com a janela de origem aberta
+
+function interpretacaoHtml(cls){
+  if(cls.tipo==="chapa"){
+    return cls.ok
+      ? (cls.circular ? `e=${fmt(cls.thickness,2)}mm · Ø${fmt(cls.diametro,1)}mm` : `e=${fmt(cls.thickness,2)}mm · ${fmt(cls.width,1)}×${fmt(cls.height,1)}mm`)
+      : `<span class="pill-tag warn">revisar descrição</span>`;
+  }
+  if(cls.tipo==="barra"){
+    return cls.ok
+      ? `${escapeHtml(cls.identidade)} · L=${fmt(cls.length,1)}mm`
+      : `<span class="pill-tag warn">revisar descrição</span>`;
+  }
+  return `<span style="color:var(--muted);">não entra na otimização de corte</span>`;
+}
+// quantidade pode ficar fracionária depois de um rateio, então só mostra decimais quando existem
+function fmtQtd(v){ return Number.isInteger(Number(v)) ? fmt(v,0) : fmt(v,2); }
+// percentual do extra: 0 aparece como campo vazio (o placeholder "0" já diz que não há extra)
+function fmtPct(v){
+  const n = Number(v)||0;
+  if(!n) return "";
+  return Number.isInteger(n) ? fmt(n,0) : fmt(n,2);
+}
+// coluna "Qtd final": sem extra, repete a Qtd em tom apagado; com extra, destaca o total que
+// vai ser comprado e mostra embaixo quanto foi acrescentado (peças e massa).
+function extraFinalHtml(g){
+  const base = Number(g.qtd)||0;
+  const pct = extraPctOf(g);
+  if(!pct) return `<span class="extra-final off">${fmtQtd(base)}</span>`;
+  const fim = qtdComExtra(base, pct);
+  const d = fim - base;
+  return `<span class="extra-final on">${fmtQtd(fim)}</span>`
+    + `<div class="extra-hint">${d>=0?"+":"−"}${fmtQtd(Math.abs(d))} un · ${fmt(massaComExtra(g),2)} kg</div>`;
+}
+
 function renderGroupedTable(grouped){
   let html = `<thead><tr>
     <th>Especificação</th><th>Descrição</th><th>Material</th>
-    <th class="num">Qtd</th><th class="num">Massa (kg)</th><th>Interpretação</th><th></th>
+    <th class="num">Qtd</th>
+    <th class="num" title="Porcentagem a mais pedida deste item (folga/perda de obra): 100 un com 10% viram 110 un.">Extra %</th>
+    <th class="num" title="Qtd + Extra % — é esta quantidade que sai nas exportações e na otimização de corte.">Qtd final</th>
+    <th class="num">Massa (kg)</th><th>Interpretação</th><th></th>
   </tr></thead><tbody>`;
   grouped.forEach((g,idx)=>{
     const cls = classifyGroup(g);
-    let tagHtml, interpretHtml;
-    if(cls.tipo==="chapa"){
-      tagHtml = `<span class="pill-tag chapa">Chapa</span>`;
-      interpretHtml = cls.ok
-        ? (cls.circular ? `e=${fmt(cls.thickness,2)}mm · Ø${fmt(cls.diametro,1)}mm` : `e=${fmt(cls.thickness,2)}mm · ${fmt(cls.width,1)}×${fmt(cls.height,1)}mm`)
-        : `<span class="pill-tag warn">revisar descrição</span>`;
-    } else if(cls.tipo==="barra"){
-      tagHtml = `<span class="pill-tag barra">Barra/Tubo</span>`;
-      interpretHtml = cls.ok
-        ? `${escapeHtml(cls.identidade)} · L=${fmt(cls.length,1)}mm`
-        : `<span class="pill-tag warn">revisar descrição</span>`;
-    } else {
-      tagHtml = `<span class="pill-tag outro">Outro</span>`;
-      interpretHtml = `<span style="color:var(--muted);">não entra na otimização de corte</span>`;
-    }
-    html += `<tr data-idx="${idx}">
+    let tagHtml;
+    if(cls.tipo==="chapa") tagHtml = `<span class="pill-tag chapa">Chapa</span>`;
+    else if(cls.tipo==="barra") tagHtml = `<span class="pill-tag barra">Barra/Tubo</span>`;
+    else tagHtml = `<span class="pill-tag outro">Outro</span>`;
+    const nOrig = (g.origem||[]).length;
+    const aberto = openOrigem.has(idx);
+    html += `<tr data-idx="${idx}"${aberto?' class="has-origem-open"':''}>
       <td>${tagHtml}<br><input class="cell-input" data-field="especificacao" value="${escapeHtml(g.especificacao)}"></td>
       <td><input class="cell-input" data-field="descricao" value="${escapeHtml(g.descricao)}"></td>
       <td><input class="cell-input" data-field="material" value="${escapeHtml(g.material)}"></td>
-      <td class="num"><input class="cell-input num" data-field="qtd" value="${fmt(g.qtd,0)}"></td>
+      <td class="num"><input class="cell-input num" data-field="qtd" value="${fmtQtd(g.qtd)}"></td>
+      <td class="num"><input class="cell-input num extra" data-field="extraPct" value="${fmtPct(extraPctOf(g))}" placeholder="0" title="Deixe em branco (ou 0) para não pedir extra deste item."></td>
+      <td class="num" data-extra-final>${extraFinalHtml(g)}</td>
       <td class="num"><input class="cell-input num" data-field="massa" value="${fmt(g.massa,2)}"></td>
-      <td data-interpret>${interpretHtml}</td>
-      <td><button class="btn-icon" type="button" data-del title="Remover item">🗑</button></td>
+      <td data-interpret>${interpretacaoHtml(cls)}</td>
+      <td><div class="cell-actions">
+        <button class="btn-icon btn-origem${aberto?" open":""}" type="button" data-origem-toggle title="${aberto?"Fechar":"Ver e editar"} os itens que formaram este item agrupado">${aberto?"▾":"⧉"} ${nOrig}</button>
+        <button class="btn-icon" type="button" data-del title="Remover item">🗑</button>
+      </div></td>
     </tr>`;
+    if(aberto){
+      html += `<tr class="origem-row" data-origem-for="${idx}"><td colspan="9">${renderOrigemPanel(g, idx)}</td></tr>`;
+    }
   });
   html += "</tbody>";
   els.groupedTable.innerHTML = html;
   els.groupedSection.hidden = false;
   els.groupedBody.hidden = false;
   els.groupedToggleBtn.textContent = "▾ Minimizar";
+  updateExtraSummary();
+}
+
+// conteúdo da janela de itens de origem de um item agrupado (a "gaveta" que abre embaixo da
+// linha). Cada linha de origem é editável campo a campo; editar aqui recalcula na hora o
+// total (Qtd/Massa) do item agrupado, que é sempre a soma das linhas de origem.
+function renderOrigemPanel(g, idx){
+  const members = g.origem || [];
+  const head = `<div class="origem-head">
+      <span class="origem-title">Itens de origem de <b>${escapeHtml(g.descricao || g.especificacao || "(item sem descrição)")}</b></span>
+      <span class="origem-sub">${members.length} linha(s) somada(s) neste item agrupado</span>
+      <button class="btn-toggle" type="button" data-origem-close>✕ Fechar</button>
+    </div>`;
+
+  if(!members.length){
+    return `<div class="origem-panel">${head}
+      <p class="origem-empty">Este item não tem linhas de origem registradas — ou foi adicionado à mão com <b>+ Adicionar item</b>, ou veio de uma versão anterior da lista. Use <b>+ Adicionar item de origem</b> abaixo para detalhar de onde ele vem; enquanto não houver nenhuma, a Qtd e a Massa continuam sendo as da própria linha agrupada.</p>
+      <div class="origem-foot"><button class="btn-secondary" type="button" data-origem-add>+ Adicionar item de origem</button></div>
+    </div>`;
+  }
+
+  const rows = members.map((m,oi)=>{
+    const differs = normalizeText(m.especificacao)!==normalizeText(g.especificacao)
+      || normalizeText(m.descricao)!==normalizeText(g.descricao)
+      || normalizeMaterial(m.material)!==normalizeMaterial(g.material);
+    return `<tr data-oidx="${oi}">
+      <td class="origem-src" title="Linha de onde este item foi lido">${m.linha ? "L"+m.linha : "—"}</td>
+      <td><input class="cell-input" data-ofield="item" value="${escapeHtml(m.item||"")}"></td>
+      <td><input class="cell-input" data-ofield="especificacao" value="${escapeHtml(m.especificacao||"")}"></td>
+      <td><input class="cell-input" data-ofield="descricao" value="${escapeHtml(m.descricao||"")}"></td>
+      <td><input class="cell-input" data-ofield="material" value="${escapeHtml(m.material||"")}"></td>
+      <td class="num"><input class="cell-input num" data-ofield="qtd" value="${fmtQtd(m.qtd)}"></td>
+      <td class="num"><input class="cell-input num" data-ofield="massa" value="${fmt(m.massa,2)}"></td>
+      <td><div class="cell-actions">
+        <span data-odiff>${differs?ORIGEM_DIFF_TAG:""}</span>
+        <button class="btn-icon" type="button" data-odel title="Remover esta linha de origem">🗑</button>
+      </div></td>
+    </tr>`;
+  }).join("");
+
+  return `<div class="origem-panel">${head}
+    <div class="table-wrap"><table class="data-table origem-table"><thead><tr>
+      <th title="Linha da planilha / do texto colado">Linha</th><th>Item</th><th>Especificação</th><th>Descrição</th><th>Material</th>
+      <th class="num">Qtd</th><th class="num">Massa (kg)</th><th></th>
+    </tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="origem-foot">
+      <span class="origem-sum" data-origem-sum>${origemSumLabel(g)}</span>
+      <button class="btn-secondary" type="button" data-origem-add>+ Adicionar item de origem</button>
+    </div>
+  </div>`;
+}
+
+// aviso de uma linha de origem que não bate mais com o grupo onde está
+const ORIGEM_DIFF_TAG = `<span class="pill-tag warn" title="Especificação, descrição ou material diferentes do item agrupado — ao clicar em ↻ Reagrupar esta linha sai daqui e vai para o grupo que bater com ela (criando um novo, se preciso).">sai do grupo</span>`;
+
+function origemSumLabel(g){
+  const q = sumOrigem(g,"qtd"), m = sumOrigem(g,"massa");
+  if(q==null) return "";
+  return `Soma das linhas de origem: <b>${fmtQtd(q)}</b> un · <b>${fmt(m,2)}</b> kg`;
+}
+
+// recalcula o total do item agrupado a partir das linhas de origem e atualiza a linha da
+// tabela (inputs de Qtd/Massa + coluna Interpretação) sem re-renderizar tudo, pra não perder
+// o cursor de quem está digitando na janela.
+function syncGroupFromOrigem(idx){
+  const g = lastGrouped[idx];
+  if(!g || !g.origem || !g.origem.length) return;
+  g.qtd = sumOrigem(g,"qtd");
+  g.massa = sumOrigem(g,"massa");
+  const row = els.groupedTable.querySelector(`tr[data-idx="${idx}"]`);
+  if(!row) return;
+  const qi = row.querySelector('input[data-field="qtd"]');
+  const mi = row.querySelector('input[data-field="massa"]');
+  if(qi && document.activeElement!==qi) qi.value = fmtQtd(g.qtd);
+  if(mi && document.activeElement!==mi) mi.value = fmt(g.massa,2);
+  refreshRowInterpretation(idx);
+  refreshRowExtra(idx);
+  const sumEl = els.groupedTable.querySelector(`tr[data-origem-for="${idx}"] [data-origem-sum]`);
+  if(sumEl) sumEl.innerHTML = origemSumLabel(g);
+}
+
+// redesenha só o conteúdo da janela de origem de um grupo (quando a lista de linhas muda:
+// adicionar, remover, ou rateio do total digitado na linha agrupada)
+function refreshOrigemPanel(idx){
+  const cell = els.groupedTable.querySelector(`tr[data-origem-for="${idx}"] > td`);
+  if(!cell) return;
+  cell.innerHTML = renderOrigemPanel(lastGrouped[idx], idx);
+}
+
+// atualiza a coluna "Qtd final" de uma linha (e o resumo do extra no topo da seção) sem
+// re-renderizar a tabela inteira, pra quem está digitando não perder o foco do campo.
+function refreshRowExtra(idx){
+  const g = lastGrouped[idx];
+  if(!g) return;
+  const cell = els.groupedTable.querySelector(`tr[data-idx="${idx}"] [data-extra-final]`);
+  if(cell) cell.innerHTML = extraFinalHtml(g);
+  updateExtraSummary();
 }
 
 // atualiza só a coluna "Interpretação" de uma linha, sem re-renderizar a tabela inteira —
@@ -1784,23 +2105,44 @@ function refreshRowInterpretation(idx){
   if(!g) return;
   const row = els.groupedTable.querySelector(`tr[data-idx="${idx}"]`);
   if(!row) return;
-  const cls = classifyGroup(g);
-  let interpretHtml;
-  if(cls.tipo==="chapa"){
-    interpretHtml = cls.ok
-      ? (cls.circular ? `e=${fmt(cls.thickness,2)}mm · Ø${fmt(cls.diametro,1)}mm` : `e=${fmt(cls.thickness,2)}mm · ${fmt(cls.width,1)}×${fmt(cls.height,1)}mm`)
-      : `<span class="pill-tag warn">revisar descrição</span>`;
-  } else if(cls.tipo==="barra"){
-    interpretHtml = cls.ok
-      ? `${escapeHtml(cls.identidade)} · L=${fmt(cls.length,1)}mm`
-      : `<span class="pill-tag warn">revisar descrição</span>`;
-  } else {
-    interpretHtml = `<span style="color:var(--muted);">não entra na otimização de corte</span>`;
-  }
-  row.querySelector("[data-interpret]").innerHTML = interpretHtml;
+  row.querySelector("[data-interpret]").innerHTML = interpretacaoHtml(classifyGroup(g));
+}
+
+// marca/desmarca o aviso "sai do grupo" de uma linha de origem, sem re-renderizar a janela
+function refreshOrigemDiff(idx, oidx){
+  const g = lastGrouped[idx];
+  const m = g && g.origem ? g.origem[oidx] : null;
+  if(!m) return;
+  const cell = els.groupedTable.querySelector(`tr[data-origem-for="${idx}"] tr[data-oidx="${oidx}"] [data-odiff]`);
+  if(!cell) return;
+  const differs = normalizeText(m.especificacao)!==normalizeText(g.especificacao)
+    || normalizeText(m.descricao)!==normalizeText(g.descricao)
+    || normalizeMaterial(m.material)!==normalizeMaterial(g.material);
+  cell.innerHTML = differs ? ORIGEM_DIFF_TAG : "";
 }
 
 els.groupedTable.addEventListener("input", (ev)=>{
+  const oinput = ev.target.closest("input[data-ofield]");
+  if(oinput){
+    // edição de uma LINHA DE ORIGEM, dentro da janela
+    const orow = oinput.closest("tr[data-oidx]");
+    const idx = parseInt(orow.closest("tr[data-origem-for]").dataset.origemFor, 10);
+    const oidx = parseInt(orow.dataset.oidx, 10);
+    const g = lastGrouped[idx];
+    const m = g && g.origem ? g.origem[oidx] : null;
+    if(!m) return;
+    const field = oinput.dataset.ofield;
+    if(field==="qtd" || field==="massa"){
+      const v = toNumBR(oinput.value);
+      m[field] = isNaN(v) ? 0 : v;
+      syncGroupFromOrigem(idx);
+    } else {
+      m[field] = oinput.value;
+      refreshOrigemDiff(idx, oidx);
+    }
+    return;
+  }
+
   const input = ev.target.closest("input[data-field]");
   if(!input) return;
   const row = input.closest("tr[data-idx]");
@@ -1808,17 +2150,113 @@ els.groupedTable.addEventListener("input", (ev)=>{
   const g = lastGrouped[idx];
   if(!g) return;
   const field = input.dataset.field;
-  if(field==="qtd" || field==="massa") g[field] = toNumBR(input.value);
-  else g[field] = input.value;
+  if(field==="extraPct"){
+    // o extra é do item agrupado, não das linhas de origem: não rateia nada, só muda a
+    // quantidade final. As seções de corte só são refeitas no fim da digitação (change).
+    const v = toNumBR(input.value);
+    g.extraPct = isNaN(v) ? 0 : v;
+    refreshRowExtra(idx);
+    return;
+  }
+  if(field==="qtd" || field==="massa"){
+    // o valor da linha agrupada é um TOTAL; o rateio entre as linhas de origem só acontece
+    // quando a pessoa termina de digitar (evento change), pra não redistribuir a cada tecla
+    g[field] = toNumBR(input.value);
+    refreshRowExtra(idx);
+  } else {
+    // corrigir especificação/descrição/material do item agrupado corrige junto as linhas de
+    // origem que ainda estavam com o valor antigo — as que a pessoa já tinha editado à mão
+    // na janela (e por isso divergem) são deixadas em paz.
+    const prev = g[field];
+    g[field] = input.value;
+    if(g.origem){
+      for(const m of g.origem){
+        if(normalizeText(m[field]) === normalizeText(prev)) m[field] = input.value;
+      }
+    }
+    if(openOrigem.has(idx)) refreshOrigemPanel(idx);
+  }
   refreshRowInterpretation(idx);
 });
 
+// Qtd/Massa digitadas na linha agrupada são um total: ao sair do campo, o valor é rateado
+// entre as linhas de origem (proporcional ao que cada uma representava; com uma linha só, vai
+// tudo pra ela), pra soma e total nunca ficarem em desacordo.
+els.groupedTable.addEventListener("change", (ev)=>{
+  const extraInput = ev.target.closest('input[data-field="extraPct"]');
+  if(extraInput){
+    // terminou de digitar o extra: normaliza o que ficou no campo e refaz a otimização de
+    // corte com a quantidade nova (mais peças podem significar mais uma chapa/barra).
+    const idx = parseInt(extraInput.closest("tr[data-idx]").dataset.idx, 10);
+    const g = lastGrouped[idx];
+    if(!g) return;
+    extraInput.value = fmtPct(extraPctOf(g));
+    refreshRowExtra(idx);
+    renderCutSections();
+    els.previewPanel.hidden = true;
+    return;
+  }
+  const input = ev.target.closest('input[data-field="qtd"], input[data-field="massa"]');
+  if(!input) return;
+  const row = input.closest("tr[data-idx]");
+  const idx = parseInt(row.dataset.idx, 10);
+  const g = lastGrouped[idx];
+  if(!g || !g.origem || !g.origem.length) return;
+  if(applyTotalsToOrigem(g) && openOrigem.has(idx)) refreshOrigemPanel(idx);
+});
+
 els.groupedTable.addEventListener("click", (ev)=>{
+  const toggle = ev.target.closest("button[data-origem-toggle]");
+  if(toggle){
+    const idx = parseInt(toggle.closest("tr[data-idx]").dataset.idx, 10);
+    if(openOrigem.has(idx)) openOrigem.delete(idx); else openOrigem.add(idx);
+    renderGroupedTable(lastGrouped);
+    return;
+  }
+  const close = ev.target.closest("button[data-origem-close]");
+  if(close){
+    openOrigem.delete(parseInt(close.closest("tr[data-origem-for]").dataset.origemFor, 10));
+    renderGroupedTable(lastGrouped);
+    return;
+  }
+  const add = ev.target.closest("button[data-origem-add]");
+  if(add){
+    const idx = parseInt(add.closest("tr[data-origem-for]").dataset.origemFor, 10);
+    const g = lastGrouped[idx];
+    if(!g) return;
+    const primeiro = !g.origem || !g.origem.length;
+    if(!g.origem) g.origem = [];
+    // a primeira linha de origem de um item criado à mão herda o total dele (senão o item
+    // agrupado zeraria ao passar a somar as origens)
+    g.origem.push({
+      item:"", linha:undefined,
+      especificacao:g.especificacao, descricao:g.descricao, material:g.material,
+      qtd: primeiro ? (Number(g.qtd)||0) : 0,
+      massa: primeiro ? (Number(g.massa)||0) : 0,
+    });
+    renderGroupedTable(lastGrouped);
+    const inputs = els.groupedTable.querySelectorAll(`tr[data-origem-for="${idx}"] tr[data-oidx="${g.origem.length-1}"] input`);
+    if(inputs[0]) inputs[0].focus();
+    return;
+  }
+  const odel = ev.target.closest("button[data-odel]");
+  if(odel){
+    const idx = parseInt(odel.closest("tr[data-origem-for]").dataset.origemFor, 10);
+    const oidx = parseInt(odel.closest("tr[data-oidx]").dataset.oidx, 10);
+    const g = lastGrouped[idx];
+    if(!g || !g.origem) return;
+    g.origem.splice(oidx, 1);
+    if(g.origem.length){ g.qtd = sumOrigem(g,"qtd"); g.massa = sumOrigem(g,"massa"); }
+    renderGroupedTable(lastGrouped);
+    return;
+  }
+
   const btn = ev.target.closest("button[data-del]");
   if(!btn) return;
   const row = btn.closest("tr[data-idx]");
   const idx = parseInt(row.dataset.idx, 10);
   lastGrouped.splice(idx, 1);
+  openOrigem.clear();
   renderGroupedTable(lastGrouped);
 });
 
