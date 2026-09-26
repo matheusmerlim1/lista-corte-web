@@ -330,6 +330,50 @@ const esperar = ms => new Promise(r => setTimeout(r, ms));
     return true;
   });
 
+  /** clica num botão de ordem e devolve o que está na tela e o que sairia no arquivo */
+  const ordenarPor = async campo => JSON.parse(await rodar(`(() => {
+    document.querySelector('[data-ordem=${JSON.stringify(campo)}]').click();
+    // as células da tabela são campos editáveis: o texto está no value, não no textContent
+    const naTela = [...document.querySelectorAll("#groupedTable tbody tr[data-idx]")]
+      .map(tr => { const i = tr.querySelector('input[data-field="descricao"]'); return i ? i.value.trim() : ""; });
+    const noArquivo = buildPadraoOriginalSheet().rows.map(r => String(r[3] != null ? r[3] : ""));
+    const consolidada = buildTudoNumaAbaSheet("x").rows.map(r => String(r[3] != null ? r[3] : ""));
+    return JSON.stringify({campo: ordemDaLista.campo, sentido: ordemDaLista.sentido,
+                           naTela, noArquivo, consolidada});
+  })()`));
+
+  await passo("botão de ordem reordena a tela e o arquivo", async () => {
+    const doc = await ordenarPor("documento");
+    const desc = await ordenarPor("descricao");
+    if (desc.campo !== "descricao" || desc.sentido !== 1) throw new Error("o botão não pegou");
+    const crescente = [...desc.naTela].sort((a,b)=>a.localeCompare(b,"pt-BR",{sensitivity:"base",numeric:true}));
+    if (desc.naTela.join("|") !== crescente.join("|"))
+      throw new Error("a tela não ficou em ordem de descrição");
+    if (desc.naTela.join("|") === doc.naTela.join("|"))
+      throw new Error("a ordem da tela não mudou");
+    // o arquivo tem mais linhas que a tela (leva as linhas de conjunto), então a conferência
+    // é a própria ordenação, não a igualdade com a tela
+    const arqOrdenado = [...desc.noArquivo].sort((a,b)=>a.localeCompare(b,"pt-BR",{sensitivity:"base",numeric:true}));
+    if (desc.noArquivo.join("|") !== arqOrdenado.join("|"))
+      throw new Error("o arquivo exportado saiu fora da ordem escolhida");
+    if (desc.consolidada.join("|") !== [...desc.consolidada].sort((a,b)=>a.localeCompare(b,"pt-BR",{sensitivity:"base",numeric:true})).join("|"))
+      throw new Error("a planilha própria saiu fora da ordem escolhida");
+    return true;
+  });
+
+  await passo("clicar de novo inverte o sentido, e Documento volta ao original", async () => {
+    const desce = await ordenarPor("descricao");   // segundo clique no mesmo botão
+    if (desce.sentido !== -1) throw new Error("não inverteu");
+    const decrescente = [...desce.naTela].sort((a,b)=>b.localeCompare(a,"pt-BR",{sensitivity:"base",numeric:true}));
+    if (desce.naTela.join("|") !== decrescente.join("|")) throw new Error("a tela não ficou decrescente");
+    const volta = await ordenarPor("documento");
+    const ordens = JSON.parse(await rodar(`JSON.stringify(registrosOriginais().map(r => Number(r.ordem)||0))`));
+    for (let i = 1; i < ordens.length; i++)
+      if (ordens[i] < ordens[i-1]) throw new Error("voltando para Documento, a ordem original não voltou");
+    if (volta.campo !== "documento") throw new Error("o botão Documento não pegou");
+    return true;
+  });
+
   if (process.argv.includes("--shot")) {
     const r = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
     fs.writeFileSync(path.join(os.tmpdir(), "p8_tela.png"), Buffer.from(r.result.data, "base64"));

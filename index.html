@@ -95,11 +95,17 @@
       <div class="table-wrap">
         <div class="group-controls" style="margin:0 0 10px;">
           <div>
-            <label>Ordem da lista</label><br>
-            <select id="ordemListaSel">
-              <option value="documento">Igual ao documento de origem</option>
-              <option value="alfabetica">Alfabética pela descrição</option>
-            </select>
+            <label>Ordenar a lista por</label>
+            <div class="ordem-btns" id="ordemBtns" role="group" aria-label="Ordenar a lista por">
+              <button type="button" class="ordem-btn" data-ordem="documento" aria-pressed="true">Documento<span class="ordem-btn__seta"></span></button>
+              <button type="button" class="ordem-btn" data-ordem="item" aria-pressed="false">Item<span class="ordem-btn__seta"></span></button>
+              <button type="button" class="ordem-btn" data-ordem="especificacao" aria-pressed="false">Especificação<span class="ordem-btn__seta"></span></button>
+              <button type="button" class="ordem-btn" data-ordem="descricao" aria-pressed="false">Descrição<span class="ordem-btn__seta"></span></button>
+              <button type="button" class="ordem-btn" data-ordem="material" aria-pressed="false">Material<span class="ordem-btn__seta"></span></button>
+              <button type="button" class="ordem-btn" data-ordem="qtd" aria-pressed="false">Qtd<span class="ordem-btn__seta"></span></button>
+              <button type="button" class="ordem-btn" data-ordem="massa" aria-pressed="false">Massa<span class="ordem-btn__seta"></span></button>
+            </div>
+            <p class="help" id="ordemAviso" style="margin:6px 0 0;"></p>
           </div>
         </div>
         <table class="data-table" id="groupedTable"></table>

@@ -237,6 +237,14 @@
   .group-card h3{font-size:16px; font-weight:700; margin-bottom:4px;}
   .group-card .group-meta{font-size:12.5px; color:var(--muted); margin-bottom:12px;}
   .group-card-header{display:flex; align-items:flex-start; justify-content:space-between; gap:12px;}
+  .ordem-btns{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;}
+  .ordem-btn{
+    padding:5px 13px; border-radius:100px; border:1px solid var(--border); background:var(--surface);
+    color:var(--muted); font-family:"IBM Plex Sans",sans-serif; font-size:12.5px; font-weight:600;
+    cursor:pointer; white-space:nowrap;
+  }
+  .ordem-btn:hover{border-color:var(--accent); color:var(--accent);}
+  .ordem-btn.is-on{background:var(--accent); border-color:var(--accent); color:var(--surface);}
   .btn-toggle{
     flex:none; padding:4px 12px; border-radius:100px; border:1px solid var(--border); background:var(--surface);
     color:var(--muted); font-family:"IBM Plex Sans",sans-serif; font-size:12px; font-weight:600; cursor:pointer;

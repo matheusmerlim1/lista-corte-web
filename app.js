@@ -67,32 +67,81 @@ function qtdDaCelula(v){
   return {qtd:n, suposta:false};
 }
 
-// ordena uma lista de linhas (qualquer objeto com `.descricao`) alfabeticamente pela
-// descrição — usado nas listas consolidada e compactada (o resumo de corte continua
-// ordenado pelo plano de corte, que é mais útil ali do que ordem alfabética).
-function sortByDescricao(rows){
-  return [...rows].sort((a,b)=> String(a.descricao||"").localeCompare(String(b.descricao||""), "pt-BR", {sensitivity:"base"}));
+// Por onde a lista é ordenada. A escolha fica na seção 2, em botões, e vale para a tela e
+// para todas as exportações — só o resumo de corte não obedece, porque ali a ordem é a do
+// plano de corte, que é o que serve para quem vai cortar.
+const CAMPOS_DE_ORDEM = [
+  {campo:"documento",    rotulo:"Documento"},
+  {campo:"item",         rotulo:"Item"},
+  {campo:"especificacao",rotulo:"Especificação"},
+  {campo:"descricao",    rotulo:"Descrição"},
+  {campo:"material",     rotulo:"Material"},
+  {campo:"qtd",          rotulo:"Qtd"},
+  {campo:"massa",        rotulo:"Massa"},
+];
+let ordemDaLista = (function(){
+  try{
+    const salvo = JSON.parse(localStorage.getItem("listaCorteOrdem2") || "null");
+    if(salvo && CAMPOS_DE_ORDEM.some(c=>c.campo===salvo.campo)) return {campo:salvo.campo, sentido:salvo.sentido===-1?-1:1};
+    // preferência gravada pela versão anterior, que só tinha duas opções
+    const antigo = localStorage.getItem("listaCorteOrdem");
+    if(antigo==="alfabetica") return {campo:"descricao", sentido:1};
+  }catch(e){}
+  return {campo:"documento", sentido:1};
+})();
+function setOrdemDaLista(campo, sentido){
+  if(!CAMPOS_DE_ORDEM.some(c=>c.campo===campo)) campo = "documento";
+  ordemDaLista = {campo, sentido: sentido===-1 ? -1 : 1};
+  try{ localStorage.setItem("listaCorteOrdem2", JSON.stringify(ordemDaLista)); }catch(e){}
+}
+
+// o item pode estar na própria linha ou só na linha de origem que deu forma ao grupo
+function itemDaLinha(r){
+  if(r.item) return String(r.item);
+  const o = r.origem && r.origem[0];
+  return o && o.item ? String(o.item) : "";
+}
+function textoParaOrdem(r, campo){
+  if(campo==="item") return itemDaLinha(r);
+  return String(r[campo] || "");
+}
+function numeroParaOrdem(r, campo){
+  const v = Number(r[campo]);
+  return Number.isFinite(v) ? v : null;
 }
 // ordem em que as linhas apareceram no documento de origem: é assim que a lista sai por
 // padrão, para bater com a lista que a pessoa recebeu (as listas de material seguem a
-// sequência de montagem do desenho, não a ordem alfabética).
-function sortByOrdem(rows){
-  return [...rows].sort((a,b)=>{
-    const oa = Number(a.ordem), ob = Number(b.ordem);
-    if(Number.isFinite(oa) && Number.isFinite(ob) && oa!==ob) return oa-ob;
-    if(Number.isFinite(oa) !== Number.isFinite(ob)) return Number.isFinite(oa) ? -1 : 1;
-    return String(a.descricao||"").localeCompare(String(b.descricao||""), "pt-BR", {sensitivity:"base"});
-  });
+// sequência de montagem do desenho, não a ordem alfabética)
+function compararPorDocumento(a, b){
+  const oa = Number(a.ordem), ob = Number(b.ordem);
+  if(Number.isFinite(oa) && Number.isFinite(ob) && oa!==ob) return oa-ob;
+  if(Number.isFinite(oa) !== Number.isFinite(ob)) return Number.isFinite(oa) ? -1 : 1;
+  return String(a.descricao||"").localeCompare(String(b.descricao||""), "pt-BR", {sensitivity:"base"});
 }
-// "documento" (padrão) ou "alfabetica" — a escolha fica na seção 2 e vale para a tela e
-// para todas as exportações que não seguem o plano de corte.
-let ordemDaLista = (function(){ try{ return localStorage.getItem("listaCorteOrdem") || "documento"; }catch(e){ return "documento"; } })();
-function setOrdemDaLista(v){
-  ordemDaLista = v==="alfabetica" ? "alfabetica" : "documento";
-  try{ localStorage.setItem("listaCorteOrdem", ordemDaLista); }catch(e){}
+// compara pelo campo escolhido; empate cai sempre na ordem do documento, para a lista não
+// embaralhar a cada reagrupamento
+function compararLinhas(a, b){
+  const {campo, sentido} = ordemDaLista;
+  if(campo==="documento") return compararPorDocumento(a, b);
+  let d = 0;
+  if(campo==="qtd" || campo==="massa"){
+    const na = numeroParaOrdem(a, campo), nb = numeroParaOrdem(b, campo);
+    if(na===null && nb===null) d = 0;
+    else if(na===null) d = 1;            // sem valor vai para o fim, nos dois sentidos
+    else if(nb===null) d = -1;
+    else d = na - nb;
+    if(na!==null && nb!==null) d *= sentido;
+  }else{
+    const ta = textoParaOrdem(a, campo), tb = textoParaOrdem(b, campo);
+    if(!ta && !tb) d = 0;
+    else if(!ta) d = 1;
+    else if(!tb) d = -1;
+    else d = ta.localeCompare(tb, "pt-BR", {sensitivity:"base", numeric:true}) * sentido;
+  }
+  return d || compararPorDocumento(a, b);
 }
 function ordenarLista(rows){
-  return ordemDaLista==="alfabetica" ? sortByDescricao(rows) : sortByOrdem(rows);
+  return [...rows].sort(compararLinhas);
 }
 
 /* ---------------- extra (% a mais) por item agrupado ---------------- */
@@ -1594,7 +1643,8 @@ const els = {
   exportFormatSel: document.getElementById("exportFormatSel"),
   consolidadaPageOpts: document.getElementById("consolidadaPageOpts"),
   pageModeSel: document.getElementById("pageModeSel"),
-  ordemListaSel: document.getElementById("ordemListaSel"),
+  ordemBtns: document.getElementById("ordemBtns"),
+  ordemAviso: document.getElementById("ordemAviso"),
   abasOriginalSel: document.getElementById("abasOriginalSel"),
   abasOriginalWrap: document.getElementById("abasOriginalWrap"),
   pageSizeWrap: document.getElementById("pageSizeWrap"),
@@ -1689,16 +1739,40 @@ function currentPageOpts(){
 els.exportFormatSel.addEventListener("change", ()=>{ updateFormatOptsVisibility(); els.previewPanel.hidden = true; });
 els.pageModeSel.addEventListener("change", ()=>{ updateFormatOptsVisibility(); els.previewPanel.hidden = true; });
 
-// ordem da lista: igual ao documento de origem (padrão) ou alfabética
-if(els.ordemListaSel){
-  els.ordemListaSel.value = ordemDaLista;
-  els.ordemListaSel.addEventListener("change", ()=>{
-    setOrdemDaLista(els.ordemListaSel.value);
+// ordem da lista: botões na seção 2. Clicar no que já está ligado inverte o sentido.
+function pintarBotoesDeOrdem(){
+  if(!els.ordemBtns) return;
+  for(const b of els.ordemBtns.querySelectorAll("[data-ordem]")){
+    const ligado = b.dataset.ordem === ordemDaLista.campo;
+    b.classList.toggle("is-on", ligado);
+    b.setAttribute("aria-pressed", ligado ? "true" : "false");
+    const seta = b.querySelector(".ordem-btn__seta");
+    if(seta) seta.textContent = ligado && b.dataset.ordem !== "documento"
+      ? (ordemDaLista.sentido === 1 ? " ↑" : " ↓") : "";
+  }
+  if(els.ordemAviso){
+    const rotulo = (CAMPOS_DE_ORDEM.find(c=>c.campo===ordemDaLista.campo)||{}).rotulo;
+    els.ordemAviso.textContent = ordemDaLista.campo === "documento"
+      ? "Na ordem em que as linhas vieram no documento. Vale para a tela e para o arquivo exportado."
+      : `Ordenada por ${rotulo}, ${ordemDaLista.sentido===1 ? "crescente" : "decrescente"}. ` +
+        "Vale para a tela e para o arquivo exportado.";
+  }
+}
+if(els.ordemBtns){
+  els.ordemBtns.addEventListener("click", ev=>{
+    const b = ev.target.closest("[data-ordem]");
+    if(!b) return;
+    const campo = b.dataset.ordem;
+    // mesmo campo de novo: inverte. Campo novo: começa crescente.
+    const sentido = (campo === ordemDaLista.campo && campo !== "documento") ? -ordemDaLista.sentido : 1;
+    setOrdemDaLista(campo, sentido);
+    pintarBotoesDeOrdem();
     lastGrouped = ordenarLista(lastGrouped);
     renderGroupedTable(lastGrouped);
     renderCutSections();
     els.previewPanel.hidden = true;
   });
+  pintarBotoesDeOrdem();
 }
 els.pageSizeInput.addEventListener("input", ()=>{ els.previewPanel.hidden = true; });
 updateFormatOptsVisibility();
@@ -2101,7 +2175,9 @@ els.exportXlsxBtn.addEventListener("click", ()=>{
 // lista compactada ("lista simples") — todos os itens, sem otimização, em ordem alfabética
 // por descrição.
 function contentRowsCompactada(){
-  return ordenarLista(groupsWithExtra(lastGrouped).map(g=>({especificacao:g.especificacao, descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa})));
+  return ordenarLista(groupsWithExtra(lastGrouped).map(g=>({especificacao:g.especificacao,
+    descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa,
+    ordem:g.ordem, item:itemDaLinha(g)})));
 }
 // itens que não são chapa nem barra/tubo (parafusos, arruelas, curvas, grades etc.) — a
 // categoria "Outro", que não entra na otimização de corte mas ainda precisa aparecer numa
@@ -2111,7 +2187,8 @@ function contentRowsCompactada(){
 function contentRowsOutro(){
   return ordenarLista(groupsWithExtra(lastGrouped)
     .filter(isLooseOrUnclassified)
-    .map(g=>({especificacao:g.especificacao, descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa})));
+    .map(g=>({especificacao:g.especificacao, descricao:g.descricao, material:g.material,
+              qtd:g.qtd, massa:g.massa, ordem:g.ordem, item:itemDaLinha(g)})));
 }
 // título (curto, categoria) x especificação/spec (detalhada): título = a "Especificação"
 // original que o usuário digitou na planilha (ex: "Chapa de Aço", "Tubo", "Perfil
@@ -2292,7 +2369,7 @@ function buildPadraoOriginalSheets(){
     abas.push({
       name: nome,
       headers: colunas.map(c => c.titulo),
-      rows: regs.sort((a,b)=>(Number(a.ordem)||0)-(Number(b.ordem)||0))
+      rows: ordenarLista(regs)
                 .map(reg => colunas.map(c => { const v = valorDoCampo(reg, c.campo); return v===null ? "-" : v; }))
     });
   }
@@ -2318,7 +2395,9 @@ function registrosOriginais(){
     }
   }
   for(const r of (linhasDeConjunto || [])) linhas.push(Object.assign({conjunto:true}, r));
-  return linhas.sort((a,b)=>(Number(a.ordem)||0)-(Number(b.ordem)||0));
+  // com "Documento" escolhido (o padrão) isto devolve as linhas na ordem em que vieram;
+  // se a pessoa pediu outra ordem, ela vale aqui também
+  return ordenarLista(linhas);
 }
 
 // registros da lista (itens agrupados + linhas de conjunto), já com origem, na ordem do documento
@@ -2341,7 +2420,7 @@ function registrosDaLista(){
     material: r.material, massa: r.massa, ordem: r.ordem, fonte: r.fonte,
     campos: r.campos, extras: r.extras, bruto: r.bruto, massaAusente: r.massaAusente, conjunto:true
   }));
-  return [...itens, ...conjuntos].sort((a,b)=>(Number(a.ordem)||0)-(Number(b.ordem)||0));
+  return ordenarLista([...itens, ...conjuntos]);
 }
 
 function buildPadraoOriginalSheet(){
