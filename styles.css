@@ -277,16 +277,14 @@
   footer{margin-top:36px; padding-top:16px; border-top:1px solid var(--border); color:var(--muted); font-size:12px; line-height:1.6;}
 
 /* ---------------- arrastar e soltar arquivo ---------------- */
-.drop-zone{
-  position:fixed; inset:0; z-index:9999;
-  display:grid; place-items:center;
-  background:rgba(8,18,30,.72); backdrop-filter:blur(2px);
+/* O alvo e o proprio campo de colar: a pessoa escreve ali ou solta o .xlsx ali. */
+.paste-box{ position:relative; }
+.paste-box__hint{
+  position:absolute; inset:0; z-index:5; border-radius:8px;
+  display:none; place-content:center; text-align:center; pointer-events:none;
+  border:2px dashed var(--accent); background:var(--surface-2);
 }
-.drop-zone__box{
-  padding:28px 40px; border-radius:14px; text-align:center;
-  border:2px dashed #62a8e8; background:rgba(16,34,54,.96); color:#eaf2fb;
-  box-shadow:0 10px 40px rgba(0,0,0,.45);
-}
-.drop-zone__icon{ font-size:40px; line-height:1; margin-bottom:8px; }
-.drop-zone__txt{ font-size:18px; font-weight:700; }
-.drop-zone__sub{ font-size:13px; opacity:.8; margin-top:4px; }
+.paste-box.is-drag .paste-box__hint{ display:grid; }
+.paste-box__icon{ font-size:34px; line-height:1; margin-bottom:6px; color:var(--accent); }
+.paste-box__txt{ font-size:16px; font-weight:700; color:var(--ink); }
+.paste-box__sub{ font-size:13px; opacity:.75; margin-top:4px; color:var(--ink); }

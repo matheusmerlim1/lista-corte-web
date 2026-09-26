@@ -1996,24 +1996,30 @@ async function importarSoltos(fileList){
 }
 
 (function ligarArrastarSoltar(){
-  const zona = document.getElementById("dropZone");
+  // O realce fica no campo de colar, nao numa camada sobre a pagina: assim o mesmo lugar
+  // serve para escrever e para receber o arquivo. O arquivo continua podendo ser solto em
+  // qualquer ponto da pagina.
+  const caixa = document.getElementById("pasteBox");
   let dentro = 0;
+  const realcar = liga => { if(caixa) caixa.classList.toggle("is-drag", !!liga); };
   const temArquivo = ev => [...(ev.dataTransfer ? ev.dataTransfer.types : [])].includes("Files");
   window.addEventListener("dragenter", ev => {
     if(!temArquivo(ev)) return;
-    ev.preventDefault(); dentro++; if(zona) zona.hidden = false;
+    ev.preventDefault(); dentro++; realcar(true);
   });
   window.addEventListener("dragover", ev => { if(temArquivo(ev)){ ev.preventDefault(); ev.dataTransfer.dropEffect = "copy"; } });
   window.addEventListener("dragleave", ev => {
     if(!temArquivo(ev)) return;
     dentro = Math.max(0, dentro-1);
-    if(!dentro && zona) zona.hidden = true;
+    if(!dentro) realcar(false);
   });
-  window.addEventListener("dragend", ()=>{ dentro = 0; if(zona) zona.hidden = true; });
-  document.addEventListener("mouseover", ()=>{ if(!dentro && zona && !zona.hidden) zona.hidden = true; });
+  window.addEventListener("dragend", ()=>{ dentro = 0; realcar(false); });
+  // se o arrastar terminou fora da janela, o dragleave as vezes nao chega: o primeiro
+  // movimento do mouse dentro da pagina desliga o realce
+  document.addEventListener("mouseover", ()=>{ if(!dentro) realcar(false); });
   window.addEventListener("drop", ev => {
     if(!temArquivo(ev)) return;
-    ev.preventDefault(); dentro = 0; if(zona) zona.hidden = true;
+    ev.preventDefault(); dentro = 0; realcar(false);
     importarSoltos(ev.dataTransfer.files);
   });
 })();

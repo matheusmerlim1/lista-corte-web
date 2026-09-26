@@ -32,7 +32,14 @@
   <section class="block">
     <h2>1 · Lista de materiais</h2>
     <p class="help">Copie as colunas <b>Item, Qtd, Especificação, Descrição, Material, Massa</b> de uma planilha (Excel/Sheets) — nessa ordem — e cole no campo abaixo (Ctrl+V), ou importe o arquivo <b>.xlsx</b> direto. A primeira linha pode ser o cabeçalho, tanto faz. <b>Mais de uma lista de material</b> pode ser carregada na mesma consolidação: escolha vários arquivos de uma vez, ou use os botões <b>➕ Somar</b> para juntar outra lista à que já está aberta — itens iguais vindos de arquivos diferentes viram um item só, com as quantidades somadas.</p>
-    <textarea id="pasteArea" placeholder="Cole aqui os dados copiados da planilha..."></textarea>
+    <div class="paste-box" id="pasteBox">
+      <textarea id="pasteArea" placeholder="Cole aqui os dados copiados da planilha — ou arraste o arquivo .xlsx para cá"></textarea>
+      <div class="paste-box__hint" aria-hidden="true">
+        <div class="paste-box__icon">⬇</div>
+        <div class="paste-box__txt">Solte a(s) lista(s) .xlsx aqui</div>
+        <div class="paste-box__sub">as linhas são somadas ao que já está carregado</div>
+      </div>
+    </div>
     <div class="row-actions">
       <button class="btn-primary" id="processBtn" type="button">Processar lista colada</button>
       <button class="btn-secondary" id="addPasteBtn" type="button" title="Soma o que está colado acima à consolidação atual, sem apagar as listas já carregadas.">➕ Somar lista colada</button>
@@ -47,7 +54,7 @@
       <button class="btn-secondary" id="clearBtn" type="button">Limpar</button>
       <span class="status-msg" id="parseStatus"></span>
     </div>
-    <p class="help" style="margin-top:6px;">Também dá para <b>arrastar o arquivo do Windows e soltar em qualquer lugar da página</b>: ele é somado à consolidação.</p>
+    <p class="help" style="margin-top:6px;">Também dá para <b>arrastar o arquivo do Windows e soltar no campo acima</b> (ou em qualquer lugar da página): ele é somado à consolidação.</p>
     <div id="sourcesWrap" class="sources-wrap" hidden>
       <span class="sources-label">Listas carregadas</span>
       <div id="sourcesList" class="sources-list"></div>
@@ -199,14 +206,7 @@
 
 <script src="app.js"></script>
 
-<!-- === Botao de volta ao portfolio - cole antes de   <div id="dropZone" class="drop-zone" hidden>
-    <div class="drop-zone__box">
-      <div class="drop-zone__icon">⬇</div>
-      <div class="drop-zone__txt">Solte a(s) lista(s) .xlsx aqui</div>
-      <div class="drop-zone__sub">as linhas são somadas ao que já está carregado</div>
-    </div>
-  </div>
-</body> === -->
+<!-- === Botao de volta ao portfolio - cole antes de </body> === -->
 <a id="mr-portfolio-btn" href="https://matheusmerlim1.github.io/" target="_blank" rel="noopener"
    aria-label="Abrir o portf&oacute;lio de Matheus Raposo" title="Ver todos os meus projetos">
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -373,12 +373,5 @@
 </script>
 <!-- === fim do botao === -->
 
-  <div id="dropZone" class="drop-zone" hidden>
-    <div class="drop-zone__box">
-      <div class="drop-zone__icon">⬇</div>
-      <div class="drop-zone__txt">Solte a(s) lista(s) .xlsx aqui</div>
-      <div class="drop-zone__sub">as linhas são somadas ao que já está carregado</div>
-    </div>
-  </div>
 </body>
 </html>

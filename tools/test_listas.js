@@ -64,6 +64,46 @@ const esperar = ms => new Promise(r => setTimeout(r, ms));
     await esperar(600);
   }
 
+  await passo("nada cobre a pagina quando ela abre", async () => {
+    const r = JSON.parse(await rodar(`(() => {
+      // quem esta no meio da tela? tem que ser o campo de colar ou o conteudo, nunca uma camada
+      const x = innerWidth/2, y = innerHeight/2;
+      const alvo = document.elementFromPoint(x, y);
+      const caixa = document.getElementById("pasteBox");
+      const aviso = caixa && caixa.querySelector(".paste-box__hint");
+      return JSON.stringify({
+        alvo: alvo ? (alvo.id || alvo.className || alvo.tagName) : "(nada)",
+        avisoVisivel: !!(aviso && getComputedStyle(aviso).display !== "none"),
+        cobrindo: [...document.body.querySelectorAll("*")].filter(el => {
+          const e = getComputedStyle(el);
+          if(e.position !== "fixed" || e.display === "none" || e.visibility === "hidden") return false;
+          const c = el.getBoundingClientRect();
+          return c.width > innerWidth*0.9 && c.height > innerHeight*0.9;
+        }).map(el => el.id || el.className || el.tagName)
+      });
+    })()`));
+    if (r.avisoVisivel) throw new Error("o aviso de soltar arquivo aparece sem estar arrastando nada");
+    if (r.cobrindo.length) throw new Error("camada cobrindo a pagina: " + r.cobrindo.join(", "));
+    return true;
+  });
+
+  await passo("arrastar realca o campo de colar, e sair desfaz", async () => {
+    const estado = async evento => JSON.parse(await rodar(`(() => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([new Uint8Array([1])], "x.xlsx"));
+      window.dispatchEvent(new DragEvent(${JSON.stringify(evento)}, {dataTransfer: dt, bubbles:true}));
+      const caixa = document.getElementById("pasteBox");
+      const aviso = caixa.querySelector(".paste-box__hint");
+      return JSON.stringify({realce: caixa.classList.contains("is-drag"),
+                             visivel: getComputedStyle(aviso).display !== "none"});
+    })()`));
+    const entrou = await estado("dragenter");
+    if (!entrou.realce || !entrou.visivel) throw new Error("arrastando o arquivo, o aviso nao apareceu no campo");
+    const saiu = await estado("dragleave");
+    if (saiu.realce || saiu.visivel) throw new Error("o aviso continuou depois de sair");
+    return true;
+  });
+
   await passo("soltar a primeira lista carrega os itens", async () => {
     await soltar("LISTA DE MATERIAL - DEMOLIÇÃO TUBULAÇÃO AREA 01.xlsx");
     const r = JSON.parse(await rodar(`JSON.stringify({
