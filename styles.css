@@ -275,3 +275,18 @@
   .waste-label{font-family:"IBM Plex Mono",monospace; fill:var(--muted); font-size:10px;}
 
   footer{margin-top:36px; padding-top:16px; border-top:1px solid var(--border); color:var(--muted); font-size:12px; line-height:1.6;}
+
+/* ---------------- arrastar e soltar arquivo ---------------- */
+.drop-zone{
+  position:fixed; inset:0; z-index:9999;
+  display:grid; place-items:center;
+  background:rgba(8,18,30,.72); backdrop-filter:blur(2px);
+}
+.drop-zone__box{
+  padding:28px 40px; border-radius:14px; text-align:center;
+  border:2px dashed #62a8e8; background:rgba(16,34,54,.96); color:#eaf2fb;
+  box-shadow:0 10px 40px rgba(0,0,0,.45);
+}
+.drop-zone__icon{ font-size:40px; line-height:1; margin-bottom:8px; }
+.drop-zone__txt{ font-size:18px; font-weight:700; }
+.drop-zone__sub{ font-size:13px; opacity:.8; margin-top:4px; }

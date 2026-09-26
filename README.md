@@ -2,6 +2,30 @@
 
 Cole uma lista de materiais copiada do Excel (ou várias, somadas na mesma consolidação), agrupe itens iguais e descubra quantas chapas e barras comerciais comprar — com o desenho de como distribuir o corte em cada uma.
 
+## Novidades desta versão
+
+- **Arrastar e soltar**: arraste o arquivo do Windows e solte em qualquer lugar da página. Cada arquivo solto é **somado** ao que já está carregado — solta um, vê o que veio nele, solta o próximo. Vale soltar vários de uma vez.
+- **Colunas reconhecidas pelo nome**: a ferramenta lê o cabeçalho e descobre onde estão Item, Qtd., Título, Especificação, Descrição, Material e Massa — **em qualquer ordem**. Listas com as colunas em posições diferentes se juntam na mesma consolidação sem embaralhar campo.
+- **Juntar tabelas diferentes**: se uma lista tem *Descrição* e outra tem *Especificação*, a lista final sai com **as duas colunas** (a união do que apareceu), e o item que não tinha aquele dado fica com **"-"**. Colunas fora do padrão (Norma, Fornecedor…) também viajam junto.
+- **Nada mais é descartado por falta de massa**: linhas com massa "-" (junta de vedação, parafuso, tampão) entravam como erro e sumiam da lista. Agora massa em branco vale 0 no cálculo e volta a sair como "-" na exportação. *(Numa das listas de referência, 3 dos 5 itens estavam sendo perdidos por causa disso.)*
+- **Ordem igual à do documento**: a lista sai na **mesma sequência em que veio** (é assim que a lista de material segue a montagem do desenho). Na seção 2 há um seletor para voltar à ordem alfabética, se preferir.
+- **Linhas de conjunto**: a linha do subconjunto ("Suporte 2", "Linha de Incêndio", sem peça própria e com a massa do conjunto) não entra mais como item comprável — ela seria somada em duplicidade. Continua guardada e volta na exportação no padrão do documento.
+- **Abas da planilha**:
+  - **"Mesmo padrão do documento lido"** (formato novo): sai **separado**, uma aba por lista de origem, com as colunas daquela lista e as linhas na ordem original — do jeito que veio.
+  - **"Lista consolidada"** e **"Excel simples"**: saem **tudo junto**, numa aba só (chapas, perfis/tubos e itens soltos na mesma planilha).
+  - O nome da aba descarta o começo repetido dos arquivos: sete listas chamadas "LISTA DE MATERIAL - ..." viram abas **AREA 01**, **SUPORTE 1**, **LINHA DE INCÊNDIO** — o Excel só aceita 31 caracteres por aba e o que identifica a lista fica no fim do nome.
+  - Os dois têm seletor para inverter (juntar tudo no formato original, ou separar a consolidada em abas por página A4).
+
+## Conferência
+
+`node tools/test_listas.js` abre a página num Chrome sem janela, solta as listas de
+`referencias/` como se viessem arrastadas do Windows e confere 11 pontos: contagem de itens,
+ordem igual à do documento, soma de listas sem apagar a anterior, linha de conjunto fora da
+lista de compra, união de colunas com "-", abas separadas/juntas e o arquivo gerado.
+
+Com as sete listas de referência soltas de uma vez: 47 linhas de dados nos documentos,
+47 linhas na exportação (7 abas), 37 itens depois do agrupamento e 5 linhas de conjunto.
+
 ## Como usar
 
 1. Duas formas de entrada:

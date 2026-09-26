@@ -47,6 +47,7 @@
       <button class="btn-secondary" id="clearBtn" type="button">Limpar</button>
       <span class="status-msg" id="parseStatus"></span>
     </div>
+    <p class="help" style="margin-top:6px;">Também dá para <b>arrastar o arquivo do Windows e soltar em qualquer lugar da página</b>: ele é somado à consolidação.</p>
     <div id="sourcesWrap" class="sources-wrap" hidden>
       <span class="sources-label">Listas carregadas</span>
       <div id="sourcesList" class="sources-list"></div>
@@ -85,6 +86,15 @@
         </div>
       </div>
       <div class="table-wrap">
+        <div class="group-controls" style="margin:0 0 10px;">
+          <div>
+            <label>Ordem da lista</label><br>
+            <select id="ordemListaSel">
+              <option value="documento">Igual ao documento de origem</option>
+              <option value="alfabetica">Alfabética pela descrição</option>
+            </select>
+          </div>
+        </div>
         <table class="data-table" id="groupedTable"></table>
       </div>
       <div class="row-actions">
@@ -140,15 +150,26 @@
           <option value="simples">Excel simples (planilha própria)</option>
           <option value="lista">Formato "Lista Preliminar"</option>
           <option value="consolidada">Lista consolidada (LLI)</option>
+          <option value="original">Mesmo padrão do documento lido (mesmas colunas e ordem)</option>
+        </select>
+      </div>
+    </div>
+    <div id="abasOriginalWrap" class="group-controls" style="margin-bottom:14px;" hidden>
+      <div>
+        <label>Abas — padrão do documento</label><br>
+        <select id="abasOriginalSel">
+          <option value="separado">Separado — uma aba por lista, do jeito que veio</option>
+          <option value="junto">Tudo junto — uma aba só, com a união das colunas</option>
         </select>
       </div>
     </div>
     <div id="consolidadaPageOpts" class="group-controls" style="margin-bottom:14px;" hidden>
       <div>
-        <label>Paginação dos itens soltos (abas extras)</label><br>
+        <label>Abas — lista consolidada (LLI)</label><br>
         <select id="pageModeSel">
-          <option value="auto">Automático — ajusta pelo tamanho do texto (cabe numa folha A4)</option>
-          <option value="fixed">Quantidade fixa por página</option>
+          <option value="unica">Tudo numa aba só (chapas, perfis e itens soltos juntos)</option>
+          <option value="auto">Separado por abas — automático, ajusta pelo tamanho do texto (folha A4)</option>
+          <option value="fixed">Separado por abas — quantidade fixa por página</option>
         </select>
       </div>
       <div id="pageSizeWrap" hidden>
@@ -178,7 +199,14 @@
 
 <script src="app.js"></script>
 
-<!-- === Botao de volta ao portfolio - cole antes de </body> === -->
+<!-- === Botao de volta ao portfolio - cole antes de   <div id="dropZone" class="drop-zone" hidden>
+    <div class="drop-zone__box">
+      <div class="drop-zone__icon">⬇</div>
+      <div class="drop-zone__txt">Solte a(s) lista(s) .xlsx aqui</div>
+      <div class="drop-zone__sub">as linhas são somadas ao que já está carregado</div>
+    </div>
+  </div>
+</body> === -->
 <a id="mr-portfolio-btn" href="https://matheusmerlim1.github.io/" target="_blank" rel="noopener"
    aria-label="Abrir o portf&oacute;lio de Matheus Raposo" title="Ver todos os meus projetos">
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -345,5 +373,12 @@
 </script>
 <!-- === fim do botao === -->
 
+  <div id="dropZone" class="drop-zone" hidden>
+    <div class="drop-zone__box">
+      <div class="drop-zone__icon">⬇</div>
+      <div class="drop-zone__txt">Solte a(s) lista(s) .xlsx aqui</div>
+      <div class="drop-zone__sub">as linhas são somadas ao que já está carregado</div>
+    </div>
+  </div>
 </body>
 </html>

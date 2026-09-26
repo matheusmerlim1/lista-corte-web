@@ -47,11 +47,52 @@ function toNumBR(s){
 }
 function toNumFlex(s){ return parseFloat(String(s).replace(",", ".")); }
 
+// "-", "–", "n/a", vazio: valor não informado na planilha. Numa lista de material isso é
+// comum na coluna Massa (junta, parafuso, tampão: o desenhista não preenche o peso) e não
+// pode fazer a linha ser descartada — o item existe e tem que ser comprado do mesmo jeito.
+const SEM_VALOR_RE = /^\s*(-+|–|—|n\/?a|na|nd|n\.d\.?|\?)\s*$/i;
+function semValor(s){ return s==null || String(s).trim()==="" || SEM_VALOR_RE.test(String(s)); }
+// massa: não informada vira 0 (a lista continua somando o resto)
+function massaDaCelula(v){
+  if(semValor(v)) return 0;
+  const n = toNumBR(v);
+  return isNaN(n) ? 0 : n;
+}
+// quantidade: não informada vira 1 (linha de conjunto ou campo em branco), e quem chamou
+// recebe o aviso para conferir
+function qtdDaCelula(v){
+  if(semValor(v)) return {qtd:1, suposta:true};
+  const n = toNumBR(v);
+  if(isNaN(n)) return {qtd:1, suposta:true};
+  return {qtd:n, suposta:false};
+}
+
 // ordena uma lista de linhas (qualquer objeto com `.descricao`) alfabeticamente pela
 // descrição — usado nas listas consolidada e compactada (o resumo de corte continua
 // ordenado pelo plano de corte, que é mais útil ali do que ordem alfabética).
 function sortByDescricao(rows){
   return [...rows].sort((a,b)=> String(a.descricao||"").localeCompare(String(b.descricao||""), "pt-BR", {sensitivity:"base"}));
+}
+// ordem em que as linhas apareceram no documento de origem: é assim que a lista sai por
+// padrão, para bater com a lista que a pessoa recebeu (as listas de material seguem a
+// sequência de montagem do desenho, não a ordem alfabética).
+function sortByOrdem(rows){
+  return [...rows].sort((a,b)=>{
+    const oa = Number(a.ordem), ob = Number(b.ordem);
+    if(Number.isFinite(oa) && Number.isFinite(ob) && oa!==ob) return oa-ob;
+    if(Number.isFinite(oa) !== Number.isFinite(ob)) return Number.isFinite(oa) ? -1 : 1;
+    return String(a.descricao||"").localeCompare(String(b.descricao||""), "pt-BR", {sensitivity:"base"});
+  });
+}
+// "documento" (padrão) ou "alfabetica" — a escolha fica na seção 2 e vale para a tela e
+// para todas as exportações que não seguem o plano de corte.
+let ordemDaLista = (function(){ try{ return localStorage.getItem("listaCorteOrdem") || "documento"; }catch(e){ return "documento"; } })();
+function setOrdemDaLista(v){
+  ordemDaLista = v==="alfabetica" ? "alfabetica" : "documento";
+  try{ localStorage.setItem("listaCorteOrdem", ordemDaLista); }catch(e){}
+}
+function ordenarLista(rows){
+  return ordemDaLista==="alfabetica" ? sortByDescricao(rows) : sortByOrdem(rows);
 }
 
 /* ---------------- extra (% a mais) por item agrupado ---------------- */
@@ -94,6 +135,74 @@ function groupWithExtra(g){
 }
 function groupsWithExtra(list){ return list.map(groupWithExtra); }
 
+/* ---------------- colunas reconhecidas pelo cabeçalho ---------------- */
+// As listas de material não vêm todas com as colunas na mesma ordem nem com os mesmos nomes:
+// uma traz "Item | Qtd. | Título | Especificação | Material | Massa", outra troca Material de
+// lugar, outra chama o detalhe de "Descrição". Aqui o cabeçalho é lido pelo NOME de cada
+// coluna, então listas diferentes se juntam na mesma consolidação sem embaralhar campo.
+const COLUNAS_CONHECIDAS = [
+  {campo:"item",         termos:["item no","item nº","item n","item", "pos.", "posicao", "posição", "ref"]},
+  {campo:"qtd",          termos:["qtd","qtde","quant","quantidade","qty","q."]},
+  {campo:"titulo",       termos:["titulo","título","denominacao","denominação","nome","tipo","componente"]},
+  {campo:"especificacao",termos:["especificacao","especificação","spec","especificacoes","especificações"]},
+  {campo:"descricao",    termos:["descricao","descrição","detalhe","dimensoes","dimensões","observacao","observação"]},
+  {campo:"material",     termos:["material","mat.","materia prima","matéria-prima"]},
+  {campo:"massa",        termos:["massa","peso","weight","kg"]}
+];
+function normCabec(s){
+  return String(s==null?"":s).toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/\[.*?\]|\(.*?\)/g," ")       // tira "[kg]", "(mm)"
+    .replace(/[^a-z0-9º°.\/ ]/g," ")
+    .replace(/\s+/g," ").trim();
+}
+// devolve {mapa:{campo:índice}, titulos:[...], achados:n} para uma linha de cabeçalho
+function lerCabecalho(linha){
+  const mapa = {}; const titulos = [];
+  let achados = 0;
+  (linha||[]).forEach((celula, i) => {
+    const txt = normCabec(celula);
+    titulos[i] = String(celula==null?"":celula).trim();
+    if(!txt) return;
+    for(const {campo, termos} of COLUNAS_CONHECIDAS){
+      if(mapa[campo]!==undefined) continue;
+      if(termos.some(t => txt===t || txt.startsWith(t+" ") || txt===t+"." || txt.replace(/\.$/,"")===t)){
+        mapa[campo] = i; achados++; return;
+      }
+    }
+  });
+  return {mapa, titulos, achados};
+}
+// procura o cabeçalho nas primeiras linhas; se não achar, assume a ordem clássica da
+// ferramenta (Item, Qtd, Especificação, Descrição, Material, Massa)
+const MAPA_PADRAO = {item:0, qtd:1, especificacao:2, descricao:3, material:4, massa:5};
+// papéis usados no cálculo: `tipo` (Chapa, Tubo, Junta…) e `detalhe` (a medida/especificação).
+// Cada documento nomeia as colunas do seu jeito; aqui elas viram sempre os mesmos dois papéis.
+function papeisDaLinha(valores){
+  const titulo = String(valores.titulo || "").trim();
+  const esp = String(valores.especificacao || "").trim();
+  const desc = String(valores.descricao || "").trim();
+  if(titulo && desc)  return {tipo:titulo, detalhe:desc};          // Título + Descrição
+  if(titulo && esp)   return {tipo:titulo, detalhe:esp};           // Título + Especificação (listas de material usuais)
+  if(esp && desc)     return {tipo:esp,    detalhe:desc};          // Especificação + Descrição (formato antigo da ferramenta)
+  const unica = titulo || esp || desc;                             // só uma coluna de texto:
+  return {tipo:unica, detalhe:unica};                              // ela serve de tipo e de detalhe
+}
+function acharCabecalho(tabela, limite=8){
+  for(let i=0;i<Math.min(tabela.length, limite);i++){
+    const r = lerCabecalho(tabela[i]);
+    if(r.achados>=3 && r.mapa.qtd!==undefined) return {linha:i, ...r};
+  }
+  return {linha:-1, mapa:{...MAPA_PADRAO}, titulos:["Item","Qtd.","Especificação","Descrição","Material","Massa"], achados:0};
+}
+// pega o valor de um campo na linha, conforme o mapa de colunas
+function celula(linha, mapa, campo){
+  const i = mapa[campo];
+  if(i===undefined) return "";
+  const v = (linha||[])[i];
+  return v==null ? "" : v;
+}
+
 /* ---------------- parsing da colagem (Excel) ---------------- */
 // linhas "vazias" (sem especificação real) ou marcadas como esboço/placeholder são
 // descartadas silenciosamente — não são um erro, são estrutura da planilha (cabeçalhos de
@@ -130,34 +239,135 @@ function normalizeMaterial(s){
 // lida (o arquivo .xlsx, ou "texto colado") — juntos são o endereço do item original, mostrado
 // na janela de itens de origem da seção 2. `fonte` também é o que permite carregar VÁRIAS
 // listas de material na mesma consolidação e, depois, remover uma delas sem mexer nas outras.
-function buildRow(item, qtd, especificacao, descricao, material, massa, linha, fonte){
-  return {item, qtd, especificacao:normalizeText(especificacao), descricao:normalizeText(descricao), material:normalizeMaterial(material), massa, linha, fonte};
+// cabeçalho da primeira lista lida: é o padrão que a exportação "mesmo padrão do documento"
+// reproduz (mesmos nomes de coluna, mesma ordem). Listas seguintes podem vir com as colunas
+// em outra ordem — elas são reconhecidas pelo nome e encaixadas neste padrão.
+let cabecalhoOriginal = null;
+// Colunas de TODAS as listas carregadas, na ordem em que apareceram pela primeira vez.
+// É o que permite juntar uma lista que tem "Descrição" com outra que tem "Especificação":
+// a lista final leva as duas colunas, e quem não tinha o dado fica com "-".
+let colunasDoEstudo = [];        // [{campo, titulo}]
+// as colunas de cada lista, separadas — é o que permite devolver cada uma "do jeito que veio"
+let colunasPorFonte = new Map(); // fonte -> [{campo, titulo}]
+function limparColunasDoEstudo(){ colunasDoEstudo = []; colunasPorFonte = new Map(); cabecalhoOriginal = null; }
+function registrarColunas(cab, fonte){
+  if(cab && fonte){
+    const porIndiceF = {};
+    Object.entries(cab.mapa || {}).forEach(([campo, i]) => { if(i!==undefined) porIndiceF[i] = campo; });
+    const lista = [];
+    (cab.titulos || []).forEach((titulo, i) => {
+      const campo = porIndiceF[i] || ("extra:" + normCabec(titulo));
+      if(!String(titulo||"").trim() && !porIndiceF[i]) return;
+      if(lista.some(c => c.campo === campo)) return;
+      lista.push({campo, titulo: String(titulo||"").trim() || campo});
+    });
+    if(lista.length) colunasPorFonte.set(fonte, lista);
+  }
+  return registrarColunasNoEstudo(cab);
+}
+function registrarColunasNoEstudo(cab){
+  if(!cab) return;
+  const titulos = cab.titulos || [];
+  const porIndice = {};
+  Object.entries(cab.mapa || {}).forEach(([campo, i]) => { if(i!==undefined) porIndice[i] = campo; });
+  titulos.forEach((titulo, i) => {
+    const campo = porIndice[i] || ("extra:" + normCabec(titulo));
+    if(!String(titulo||"").trim() && !porIndice[i]) return;
+    if(colunasDoEstudo.some(c => c.campo === campo)) return;
+    colunasDoEstudo.push({campo, titulo: String(titulo||"").trim() || campo});
+  });
+}
+// colunas que a lista final vai ter (união), com um padrão mínimo quando nada foi registrado
+function colunasDaLista(){
+  if(colunasDoEstudo.length) return colunasDoEstudo;
+  return [{campo:"item",titulo:"Item"},{campo:"qtd",titulo:"Qtd."},{campo:"especificacao",titulo:"Título"},
+          {campo:"descricao",titulo:"Especificação"},{campo:"material",titulo:"Material"},{campo:"massa",titulo:"Massa"}];
+}
+// linhas de conjunto (o subconjunto que agrupa as peças: "Suporte 2", "Linha de Incêndio").
+// Não são peças a comprar, mas fazem parte do documento e voltam na exportação original.
+let linhasDeConjunto = [];
+let ordemGlobal = 0;                       // conta as linhas na ordem em que foram lidas
+function proximaOrdem(){ return ++ordemGlobal; }
+function buildRow(item, qtd, especificacao, descricao, material, massa, linha, fonte, extras){
+  return Object.assign({
+    item, qtd,
+    especificacao:normalizeText(especificacao),
+    descricao:normalizeText(descricao),
+    material:normalizeMaterial(material),
+    massa, linha, fonte,
+    ordem: proximaOrdem()                  // posição no documento de origem, para a lista sair na mesma sequência
+  }, extras||{});
+}
+// linha de conjunto: o desenho traz o subconjunto (item 8, 5, 1...) e as peças dele vêm
+// numeradas 8.1, 8.2… Ela não é uma peça a comprar, mas organiza a lista e por isso é
+// guardada como seção (aparece na exportação em ordem original, nunca na de compra).
+function ehLinhaDeConjunto(item, descricao, material){
+  const semDetalhe = semValor(descricao);
+  const itemTxt = String(item==null?"":item).trim();
+  const paiNumerado = /^\d+$/.test(itemTxt);
+  return semDetalhe && (paiNumerado || semValor(material));
 }
 
 function parseRows(text, fonte){
-  const lines = text.split(/\r\n|\r|\n/).filter(l=>l.trim().length>0);
+  const linhas = text.split(/\r\n|\r|\n/).filter(l=>l.trim().length>0);
+  const tabela = linhas.map(l => l.split("\t").map(c=>c.trim()));
+  return lerTabela(tabela, fonte, "colagem");
+}
+
+// Lê uma tabela (matriz de células) já com o cabeçalho reconhecido pelo nome das colunas.
+// Serve para o texto colado e para o .xlsx — os dois passam pelo mesmo caminho, então as
+// mesmas regras valem nas duas entradas.
+function lerTabela(tabela, fonte, origemTipo){
+  const cab = acharCabecalho(tabela);
+  const mapa = cab.mapa;
   const parsed = [];
   const problems = [];
-  let startIdx = 0;
-  if(lines.length){
-    const firstCols = lines[0].split("\t");
-    if(firstCols.length>=6){
-      const qtdTest = toNumBR(firstCols[1]);
-      const massaTest = toNumBR(firstCols[5]);
-      if(isNaN(qtdTest) || isNaN(massaTest)) startIdx = 1;
-    }
+  const inicio = cab.linha + 1;
+  for(let i=inicio;i<tabela.length;i++){
+    const linha = tabela[i];
+    if(!linha || !linha.some(c => String(c==null?"":c).trim())) continue;
+    const item = celula(linha, mapa, "item");
+    const bruto = {
+      titulo: celula(linha, mapa, "titulo"),
+      especificacao: celula(linha, mapa, "especificacao"),
+      descricao: celula(linha, mapa, "descricao")
+    };
+    const {tipo, detalhe} = papeisDaLinha(bruto);
+    const especificacao = tipo, descricao = detalhe;
+    const material = celula(linha, mapa, "material");
+    // descarta só o que é mesmo lixo: linha sem nenhum texto útil ou marcada como esboço
+    if(isJunkRow(especificacao) && isJunkRow(descricao)) continue;
+    const {qtd, suposta} = qtdDaCelula(celula(linha, mapa, "qtd"));
+    const celulaMassa = celula(linha, mapa, "massa");
+    const massa = massaDaCelula(celulaMassa);
+    const massaAusente = semValor(celulaMassa);      // veio "-" ou vazio: sai "-" na exportação
+    // colunas que ESTA lista tinha (as que faltarem saem como "-" na lista final) e as
+    // colunas fora do padrão, que viajam junto com a linha
+    const camposPresentes = Object.keys(mapa);
+    const extras = {};
+    (linha||[]).forEach((v, i) => {
+      if(Object.values(mapa).includes(i)) return;
+      const titulo = (cab.titulos||[])[i];
+      if(!String(titulo||"").trim()) return;
+      extras["extra:" + normCabec(titulo)] = v==null ? "" : String(v).trim();
+    });
+    if(suposta) problems.push(`Linha ${i+1}${origemTipo==="colagem"?"":" da planilha"}: quantidade em branco — entrou como 1, confira.`);
+    parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa, i+1, fonte, {
+      secao: ehLinhaDeConjunto(item, descricao, material),
+      campos: camposPresentes,
+      massaAusente,
+      extras,
+      bruto: {
+        titulo: normalizeText(bruto.titulo),
+        especificacao: normalizeText(bruto.especificacao),
+        descricao: normalizeText(bruto.descricao)
+      }
+    }));
   }
-  for(let i=startIdx;i<lines.length;i++){
-    const cols = lines[i].split("\t").map(c=>c.trim());
-    if(cols.length<6){ problems.push(`Linha ${i+1}: esperadas 6 colunas (Item, Qtd, Especificação, Descrição, Material, Massa), encontradas ${cols.length} — ignorada.`); continue; }
-    const [item, qtdStr, especificacao, descricao, material, massaStr] = cols;
-    if(isJunkRow(especificacao)) continue;
-    const qtd = toNumBR(qtdStr);
-    const massa = toNumBR(massaStr);
-    if(isNaN(qtd) || isNaN(massa)){ problems.push(`Linha ${i+1}: Qtd ou Massa não numérico — ignorada.`); continue; }
-    parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa, i+1, fonte));
-  }
-  return {rows:parsed, problems};
+  const cabecalho = {titulos:cab.titulos, mapa, achado:cab.achados>0};
+  if(!cabecalhoOriginal && cab.achados>0) cabecalhoOriginal = cabecalho;
+  registrarColunas(cabecalho, fonte);
+  return {rows:parsed, problems, cabecalho};
 }
 
 // cada grupo guarda em `origem` uma cópia de todas as linhas que entraram nele — é o que a
@@ -167,8 +377,12 @@ function groupRows(rows){
   const map = new Map();
   for(const r of rows){
     const key = [r.especificacao, r.descricao, r.material].join("||");
-    if(!map.has(key)) map.set(key, {especificacao:r.especificacao, descricao:r.descricao, material:r.material, qtd:0, massa:0, extraPct:0, origem:[]});
+    if(!map.has(key)) map.set(key, {especificacao:r.especificacao, descricao:r.descricao, material:r.material, qtd:0, massa:0, extraPct:0, origem:[], ordem:r.ordem, secao:!!r.secao});
     const g = map.get(key);
+    // a posição do grupo é a da primeira linha que caiu nele — assim a consolidação sai na
+    // mesma sequência do documento, mesmo quando o item se repete lá na frente
+    if(Number.isFinite(Number(r.ordem)) && (!Number.isFinite(Number(g.ordem)) || Number(r.ordem) < Number(g.ordem))) g.ordem = r.ordem;
+    if(!r.secao) g.secao = false;
     g.qtd += r.qtd;
     g.massa += r.massa;
     // o extra (% a mais) viaja junto com as linhas de origem, pra não se perder num ↻ Reagrupar
@@ -179,6 +393,12 @@ function groupRows(rows){
       item: r.item==null ? "" : String(r.item),
       linha: r.linha,
       fonte: r.fonte,
+      ordem: r.ordem,
+      secao: !!r.secao,
+      campos: r.campos,
+      extras: r.extras,
+      bruto: r.bruto,
+      massaAusente: r.massaAusente,
       especificacao: r.especificacao,
       descricao: r.descricao,
       material: r.material,
@@ -239,6 +459,15 @@ function expandToSourceRows(groups){
         material: normalizeMaterial(m.material),
         qtd: Number(m.qtd)||0,
         massa: Number(m.massa)||0,
+        ordem: m.ordem,
+        secao: !!m.secao,
+        // as colunas que a lista de origem tinha, o texto original de cada uma e as colunas
+        // fora do padrão viajam junto — é o que permite devolver a lista "do jeito que veio"
+        // mesmo depois de somar outra lista e reagrupar
+        campos: m.campos,
+        extras: m.extras,
+        bruto: m.bruto,
+        massaAusente: m.massaAusente,
         // o extra é do grupo, não da linha; cada linha leva uma cópia só pra sobreviver ao
         // reagrupamento (inclusive quando a linha migra sozinha pra outro grupo)
         extraPct: extraPctOf(g),
@@ -498,26 +727,7 @@ async function parseXlsxFile(arrayBuffer, fonte){
   if(!zipData[sheetPath]) throw new Error("Não encontrei a planilha dentro do arquivo.");
 
   const table = parseWorksheetTable(zipData[sheetPath], sharedStrings);
-
-  let startIdx = 0;
-  for(let i=0; i<Math.min(table.length,6); i++){
-    const row = table[i] || [];
-    if(String(row[1]||"").toLowerCase().includes("qtd")){ startIdx = i+1; break; }
-  }
-
-  const parsed = [];
-  const problems = [];
-  for(let i=startIdx; i<table.length; i++){
-    const row = table[i];
-    if(!row) continue;
-    const [item, qtdRaw, especificacao, descricao, material, massaRaw] = row;
-    if(isJunkRow(especificacao)) continue;
-    const qtd = toNumBR(qtdRaw);
-    const massa = toNumBR(massaRaw);
-    if(isNaN(qtd) || isNaN(massa)){ problems.push(`Linha ${i+1} da planilha: Qtd ou Massa não numérico — ignorada.`); continue; }
-    parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa, i+1, fonte));
-  }
-  return {rows:parsed, problems};
+  return lerTabela(table, fonte, "planilha");
 }
 
 /* ---------------- escrita de arquivo .xlsx (sem bibliotecas externas) ---------------- */
@@ -1076,7 +1286,7 @@ function paginateConsolidadoOutro(rows, pageOpts){
 // referência). Funções puras e síncronas (sem precisar do template .xlsx) pra poderem ser
 // reaproveitadas tanto na geração real quanto na pré-visualização, sem duplicar a lógica.
 function buildConsolidadoCortavelRows(){
-  return sortByDescricao([
+  return ordenarLista([
     ...lastChapaResults.filter(Boolean).map(r=>{
       const label = "Chapa " + (r.fracLabel ? `#${r.fracLabel} (${fmt(r.thickness,2)} mm)` : `e=${fmt(r.thickness,2)} mm`);
       return {especificacao: label, descricao: label, area: Math.round(r.areaM2*100)/100, comprimento: null, material: r.material, qty: null};
@@ -1088,7 +1298,7 @@ function buildConsolidadoCortavelRows(){
   ]);
 }
 function buildConsolidadoOutroRows(){
-  return sortByDescricao(groupsWithExtra(lastGrouped).filter(isLooseOrUnclassified).map(g=>{
+  return ordenarLista(groupsWithExtra(lastGrouped).filter(isLooseOrUnclassified).map(g=>{
     const label = `${g.especificacao} ${g.descricao}`.trim();
     return {especificacao: label, descricao: label, area: null, comprimento: null, material: g.material, qty: Math.round(g.qtd*100)/100};
   }));
@@ -1110,6 +1320,15 @@ function buildConsolidadoOutroRows(){
 // pra que os três concordem sobre em que aba cada item vai parar.
 function buildConsolidadoPages(cortavelRows, outroRows, pageOpts){
   const pages = [];
+  // "uma aba só" (padrão): chapas, perfis/tubos e itens soltos saem juntos na mesma
+  // planilha, na ordem da lista — é como a lista de material é lida na obra. A paginação
+  // em abas "LLI (2)", "LLI (3)"… continua disponível para quem imprime folha a folha.
+  if((pageOpts && pageOpts.mode) === "unica"){
+    const todas = [...cortavelRows, ...outroRows];
+    pages.push({rows: todas, tipo: "mista"});
+    pages.forEach((pg,i)=>{ pg.name = i===0 ? "LLI" : `LLI (${i+1})`; });
+    return pages;
+  }
   if(cortavelRows.length) pages.push({rows: cortavelRows, tipo: "cortavel"});
   if(outroRows.length){
     paginateConsolidadoOutro(outroRows, pageOpts).forEach(rows=> pages.push({rows, tipo: "outro"}));
@@ -1375,6 +1594,9 @@ const els = {
   exportFormatSel: document.getElementById("exportFormatSel"),
   consolidadaPageOpts: document.getElementById("consolidadaPageOpts"),
   pageModeSel: document.getElementById("pageModeSel"),
+  ordemListaSel: document.getElementById("ordemListaSel"),
+  abasOriginalSel: document.getElementById("abasOriginalSel"),
+  abasOriginalWrap: document.getElementById("abasOriginalWrap"),
   pageSizeWrap: document.getElementById("pageSizeWrap"),
   pageSizeInput: document.getElementById("pageSizeInput"),
   previewBtn: document.getElementById("previewBtn"),
@@ -1455,6 +1677,10 @@ els.exportContentSel.addEventListener("change", ()=>{
 function updateFormatOptsVisibility(){
   const showPageOpts = els.exportContentSel.value === "consolidado" && els.exportFormatSel.value === "consolidada";
   els.consolidadaPageOpts.hidden = !showPageOpts;
+  if(els.abasOriginalWrap) els.abasOriginalWrap.hidden = els.exportFormatSel.value !== "original";
+  if(els.abasOriginalSel && !els.abasOriginalWrap.hidden && !els.abasOriginalSel.dataset.pronto){
+    els.abasOriginalSel.dataset.pronto = "1";
+  }
   els.pageSizeWrap.hidden = els.pageModeSel.value !== "fixed";
 }
 function currentPageOpts(){
@@ -1462,6 +1688,18 @@ function currentPageOpts(){
 }
 els.exportFormatSel.addEventListener("change", ()=>{ updateFormatOptsVisibility(); els.previewPanel.hidden = true; });
 els.pageModeSel.addEventListener("change", ()=>{ updateFormatOptsVisibility(); els.previewPanel.hidden = true; });
+
+// ordem da lista: igual ao documento de origem (padrão) ou alfabética
+if(els.ordemListaSel){
+  els.ordemListaSel.value = ordemDaLista;
+  els.ordemListaSel.addEventListener("change", ()=>{
+    setOrdemDaLista(els.ordemListaSel.value);
+    lastGrouped = ordenarLista(lastGrouped);
+    renderGroupedTable(lastGrouped);
+    renderCutSections();
+    els.previewPanel.hidden = true;
+  });
+}
 els.pageSizeInput.addEventListener("input", ()=>{ els.previewPanel.hidden = true; });
 updateFormatOptsVisibility();
 
@@ -1481,13 +1719,22 @@ function renderCutSections(){
 // arquivos diferentes se juntam num grupo só — que é o ponto de carregar mais de uma lista.
 function runPipeline(rows, problems, sourceLabel, append){
   if(rows.length===0){
-    els.parseStatus.textContent = `Nenhuma linha válida encontrada em ${sourceLabel}. Confira as 6 colunas (Item, Qtd, Especificação, Descrição, Material, Massa).`;
+    els.parseStatus.textContent = `Nenhuma linha válida encontrada em ${sourceLabel}. A lista precisa ter, no mínimo, as colunas de quantidade e de descrição/especificação — os nomes das colunas são reconhecidos sozinhos, em qualquer ordem.`;
     els.parseStatus.className = "status-msg err";
     return;
   }
   const anteriores = append ? expandToSourceRows(lastGrouped) : [];
-  const todas = [...anteriores, ...rows];
-  const grouped = sortByDescricao(groupRows(todas));
+  // linhas de conjunto ficam de fora da consolidação (a massa delas é a soma das peças
+  // filhas — somar as duas contaria o mesmo peso duas vezes), mas seguem guardadas para a
+  // exportação no padrão do documento
+  const conjuntos = rows.filter(r => r.secao);
+  // lista nova (sem somar): o registro de colunas recomeça com o que esta leitura trouxe
+  
+  const pecas = rows.filter(r => !r.secao);
+  linhasDeConjunto = append ? [...linhasDeConjunto, ...conjuntos] : conjuntos;
+  if(!append) cabecalhoOriginal = cabecalhoOriginal || null;
+  const todas = [...anteriores, ...pecas];
+  const grouped = ordenarLista(groupRows(todas));
   openOrigem.clear();
   lastGrouped = grouped;
   // lista nova = extras zerados; a mensagem do extra da lista anterior não vale mais. Somando
@@ -1497,7 +1744,8 @@ function runPipeline(rows, problems, sourceLabel, append){
   els.parseStatus.textContent = append
     ? `${sourceLabel}: +${rows.length} linha(s) — ${todas.length} no total → ${grouped.length} item(ns) agrupado(s).`
     : `${sourceLabel}: ${rows.length} linha(s) lida(s) → ${grouped.length} item(ns) agrupado(s).`;
-  els.parseStatus.textContent += (problems.length ? `  ${problems.length} linha(s) ignorada(s).` : "");
+  els.parseStatus.textContent += (problems.length ? `  ${problems.length} aviso(s) de leitura.` : "");
+  els.parseStatus.textContent += (conjuntos.length ? `  ${conjuntos.length} linha(s) de conjunto (subconjunto sem peça própria) ficaram fora da soma.` : "");
   els.parseStatus.className = "status-msg ok";
 
   renderGroupedTable(lastGrouped);
@@ -1568,7 +1816,7 @@ els.sourcesList.addEventListener("click", (ev)=>{
     els.parseStatus.className = "status-msg";
     return;
   }
-  lastGrouped = sortByDescricao(groupRows(restantes));
+  lastGrouped = ordenarLista(groupRows(restantes));
   renderGroupedTable(lastGrouped);
   renderCutSections();
   renderSources();
@@ -1597,7 +1845,7 @@ function reprocessGrouped(){
 
   const before = lastGrouped.length;
   openOrigem.clear();
-  lastGrouped = sortByDescricao(groupRows(cleaned));
+  lastGrouped = ordenarLista(groupRows(cleaned));
 
   els.parseStatus.textContent = `Reagrupado: ${cleaned.length} linha(s) de origem → ${lastGrouped.length} grupo(s)` + (before!==lastGrouped.length ? ` (era ${before}).` : ".");
   els.parseStatus.className = "status-msg ok";
@@ -1689,7 +1937,7 @@ els.addPasteBtn.addEventListener("click", ()=> processarColagem(true));
 // um arquivo ilegível não derruba os outros, só entra na lista de problemas.
 async function importarArquivos(input, append){
   const files = [...input.files];
-  input.value = "";               // permite reescolher o mesmo arquivo depois
+  try{ input.value = ""; }catch(e){}   // permite reescolher o mesmo arquivo depois
   if(!files.length) return;
   els.parseStatus.textContent = files.length===1 ? `Lendo ${files[0].name}…` : `Lendo ${files.length} arquivos…`;
   els.parseStatus.className = "status-msg";
@@ -1726,6 +1974,50 @@ async function importarArquivos(input, append){
     els.parseStatus.textContent += `  Atenção: ${[...new Set(repetidos)].join(", ")} apareceu(ram) mais de uma vez — as linhas foram somadas de novo, e a lista repetida entrou como "(2)" em "Listas carregadas" (dá pra remover ali).`;
   }
 }
+/* ---------------- arrastar e soltar arquivos na página ---------------- */
+// Cada arquivo solto é SOMADO ao que já está carregado (a não ser que nada tenha sido lido
+// ainda): solta um, vê o que veio nele, solta o próximo, e assim por diante. Vale soltar
+// vários de uma vez também.
+async function importarSoltos(fileList){
+  const arquivos = [...fileList].filter(f => /\.xlsx$/i.test(f.name));
+  const ignorados = [...fileList].filter(f => !/\.xlsx$/i.test(f.name));
+  if(!arquivos.length){
+    els.parseStatus.textContent = ignorados.length
+      ? `Só leio .xlsx — ${ignorados.map(f=>f.name).join(", ")} não entrou.`
+      : "Nenhum arquivo reconhecido.";
+    els.parseStatus.className = "status-msg err";
+    return;
+  }
+  const somar = lastGrouped.length > 0;            // já tem lista aberta: soma nela
+  await importarArquivos({files: arquivos, value: ""}, somar);
+  if(ignorados.length){
+    els.parseStatus.textContent += `  (${ignorados.map(f=>f.name).join(", ")} ignorado — só .xlsx.)`;
+  }
+}
+
+(function ligarArrastarSoltar(){
+  const zona = document.getElementById("dropZone");
+  let dentro = 0;
+  const temArquivo = ev => [...(ev.dataTransfer ? ev.dataTransfer.types : [])].includes("Files");
+  window.addEventListener("dragenter", ev => {
+    if(!temArquivo(ev)) return;
+    ev.preventDefault(); dentro++; if(zona) zona.hidden = false;
+  });
+  window.addEventListener("dragover", ev => { if(temArquivo(ev)){ ev.preventDefault(); ev.dataTransfer.dropEffect = "copy"; } });
+  window.addEventListener("dragleave", ev => {
+    if(!temArquivo(ev)) return;
+    dentro = Math.max(0, dentro-1);
+    if(!dentro && zona) zona.hidden = true;
+  });
+  window.addEventListener("dragend", ()=>{ dentro = 0; if(zona) zona.hidden = true; });
+  document.addEventListener("mouseover", ()=>{ if(!dentro && zona && !zona.hidden) zona.hidden = true; });
+  window.addEventListener("drop", ev => {
+    if(!temArquivo(ev)) return;
+    ev.preventDefault(); dentro = 0; if(zona) zona.hidden = true;
+    importarSoltos(ev.dataTransfer.files);
+  });
+})();
+
 els.xlsxInput.addEventListener("change", ()=> importarArquivos(els.xlsxInput, false));
 els.xlsxAddInput.addEventListener("change", ()=> importarArquivos(els.xlsxAddInput, true));
 
@@ -1803,7 +2095,7 @@ els.exportXlsxBtn.addEventListener("click", ()=>{
 // lista compactada ("lista simples") — todos os itens, sem otimização, em ordem alfabética
 // por descrição.
 function contentRowsCompactada(){
-  return sortByDescricao(groupsWithExtra(lastGrouped).map(g=>({especificacao:g.especificacao, descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa})));
+  return ordenarLista(groupsWithExtra(lastGrouped).map(g=>({especificacao:g.especificacao, descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa})));
 }
 // itens que não são chapa nem barra/tubo (parafusos, arruelas, curvas, grades etc.) — a
 // categoria "Outro", que não entra na otimização de corte mas ainda precisa aparecer numa
@@ -1811,7 +2103,7 @@ function contentRowsCompactada(){
 // Também sai em ordem alfabética por descrição — é a mesma lista usada dentro da lista
 // consolidada e do resumo de corte.
 function contentRowsOutro(){
-  return sortByDescricao(groupsWithExtra(lastGrouped)
+  return ordenarLista(groupsWithExtra(lastGrouped)
     .filter(isLooseOrUnclassified)
     .map(g=>({especificacao:g.especificacao, descricao:g.descricao, material:g.material, qtd:g.qtd, massa:g.massa})));
 }
@@ -1864,19 +2156,179 @@ function contentRowsResumoCorte(){
 // título curto na especificação, detalhe (espessura/bitola) na descrição, e `pecas` à parte
 // para não perder a contagem de peças que a quantidade principal (área/comprimento) substituiu.
 function contentRowsAreaChapas(){
-  return sortByDescricao(lastChapaResults.filter(Boolean).map(r=>({
+  return ordenarLista(lastChapaResults.filter(Boolean).map(r=>({
     especificacao: chapaTitulo(r),
     descricao: chapaThicknessLabel(r),
     material: r.material, qtd: Math.round(r.areaM2*100)/100, pecas: r.pecas, massa: r.massaTotal,
   })));
 }
 function contentRowsComprimentoPerfis(){
-  return sortByDescricao(lastBarraResults.filter(Boolean).map(r=>({
+  return ordenarLista(lastBarraResults.filter(Boolean).map(r=>({
     especificacao: barraTitulo(r),
     descricao: r.identidade,
     material: r.material, qtd: Math.round(r.lengthM*100)/100, pecas: r.pecas, massa: r.massaTotal,
   })));
 }
+// Tudo numa aba só: chapas (m²), perfis/tubos (m) e itens soltos na mesma planilha, na ordem
+// da lista. Cada linha preenche a coluna que faz sentido para ela e marca "-" nas outras —
+// é como a lista de material é lida na obra, sem precisar pular de aba em aba.
+function buildTudoNumaAbaSheet(sheetName){
+  const headers = ["Item","Qtd","Especificação","Descrição","Material","Área (m²)","Comprimento (m)","Massa (kg)"];
+  const linhas = [];
+  let n = 0;
+  for(const g of ordenarLista(groupsWithExtra(lastGrouped))){
+    const c = classifyGroup(g);
+    const chapa = c && c.tipo==="chapa";
+    const barra = c && c.tipo==="barra";
+    linhas.push([
+      String(++n), g.qtd, g.especificacao, g.descricao, g.material,
+      chapa && c.areaM2!=null ? Math.round(c.areaM2*100)/100 : "-",
+      barra && c.comprimentoM!=null ? Math.round(c.comprimentoM*100)/100 : "-",
+      Math.round((g.massa||0)*100)/100
+    ]);
+  }
+  return {name:sheetName||"Lista de material", headers, rows:linhas};
+}
+
+// Lista no padrão dos documentos lidos: as colunas são a UNIÃO das que apareceram em todas
+// as listas carregadas, na ordem em que surgiram. O item que veio de uma lista sem aquela
+// coluna sai com "-" — assim juntar uma lista de "Descrição/Qtd/Massa" com outra de
+// "Especificação/Qtd/Massa" dá uma tabela só, com as quatro colunas.
+function valorDoCampo(reg, campo){
+  if(campo.startsWith("extra:")) {
+    const v = (reg.extras||{})[campo];
+    return (v===undefined || v==="") ? null : v;
+  }
+  const temCampo = !reg.campos || reg.campos.includes(campo);
+  if(!temCampo) return null;                       // a lista de origem não tinha essa coluna
+  // Título / Especificação / Descrição saem como vieram no documento
+  if(campo==="titulo" || campo==="especificacao" || campo==="descricao"){
+    const b = reg.bruto || {};
+    const v0 = b[campo];
+    if(v0!==undefined && String(v0).trim()!=="") return v0;
+    // item corrigido à mão na tela (sem bruto): usa o papel equivalente
+    if(campo==="descricao" || (campo==="especificacao" && !(reg.campos||[]).includes("descricao"))) return reg.descricao || null;
+    return reg.especificacao || null;
+  }
+  const v = reg[campo];
+  if(campo==="massa"){
+    if(reg.massaAusente && !(Number(v)>0)) return null;   // não veio preenchida: sai "-"
+    return Math.round((Number(v)||0)*100)/100;
+  }
+  if(campo==="qtd") return Number(v)||0;
+  return (v===undefined || v===null || String(v).trim()==="") ? null : v;
+}
+// uma aba por lista de origem, cada uma com as SUAS colunas e na ordem em que as linhas
+// vieram no documento — é o "me devolve do jeito que eu mandei"
+// Os arquivos quase sempre comecam igual ("LISTA DE MATERIAL - ...") e o que identifica cada
+// lista fica no fim, bem onde o Excel corta (31 caracteres por aba). Entao o comeco comum a
+// todos e descartado antes do corte: sobra "AREA 01", "SUPORTE 1", "LINHA DE INCENDIO".
+function nomesCurtosDeAba(fontes){
+  const limpos = fontes.map(f => String(f).replace(/\.xlsx$/i, "").replace(/[\\\/?*\[\]:]/g, "-").trim());
+  let corte = 0;
+  if(limpos.length > 1){
+    const menor = Math.min(...limpos.map(t => t.length));
+    while(corte < menor && limpos.every(t => t[corte] === limpos[0][corte])) corte++;
+    while(corte > 0 && !/[\s\-_.]/.test(limpos[0][corte-1])) corte--;   // nao corta no meio de uma palavra
+    if(limpos.some(t => t.slice(corte).trim().length < 3)) corte = 0;   // sobraria pouco: melhor o nome inteiro
+  }
+  const nomes = new Map();
+  fontes.forEach((f, i) => {
+    const t = limpos[i].slice(corte).replace(/^[\s\-_.]+/, "").trim();
+    nomes.set(f, (t || limpos[i]).slice(0, 28) || "Lista");
+  });
+  return nomes;
+}
+
+function buildPadraoOriginalSheets(){
+  const registros = registrosOriginais();
+  const porFonte = new Map();
+  for(const reg of registros){
+    const f = reg.fonte || FONTE_MANUAL;
+    if(!porFonte.has(f)) porFonte.set(f, []);
+    porFonte.get(f).push(reg);
+  }
+  if(!porFonte.size) return [buildPadraoOriginalSheet()];
+
+  const usados = new Set();
+  const abas = [];
+  const curto = nomesCurtosDeAba([...porFonte.keys()]);
+  for(const [fonte, regs] of porFonte){
+    const colunas = colunasPorFonte.get(fonte) || colunasDaLista();
+    let nome = curto.get(fonte);
+    let n = 2;
+    while(usados.has(nome)) nome = `${nome.slice(0, 25)} (${n++})`;
+    usados.add(nome);
+    abas.push({
+      name: nome,
+      headers: colunas.map(c => c.titulo),
+      rows: regs.sort((a,b)=>(Number(a.ordem)||0)-(Number(b.ordem)||0))
+                .map(reg => colunas.map(c => { const v = valorDoCampo(reg, c.campo); return v===null ? "-" : v; }))
+    });
+  }
+  return abas;
+}
+
+// as LINHAS como vieram no documento (uma por linha da planilha), já com as correções feitas
+// na tela — é o que sai no modo "do jeito que veio"
+function registrosOriginais(){
+  const linhas = [];
+  for(const g of groupsWithExtra(lastGrouped)){
+    for(const o of (g.origem || [])){
+      linhas.push({
+        item: o.item || "", qtd: o.qtd, massa: o.massa,
+        especificacao: o.especificacao, descricao: o.descricao, material: o.material,
+        ordem: o.ordem, fonte: o.fonte, campos: o.campos, extras: o.extras, bruto: o.bruto,
+        massaAusente: o.massaAusente
+      });
+    }
+    if(!g.origem || !g.origem.length){
+      linhas.push({item:"", qtd:g.qtd, massa:g.massa, especificacao:g.especificacao,
+        descricao:g.descricao, material:g.material, ordem:g.ordem, fonte:FONTE_MANUAL});
+    }
+  }
+  for(const r of (linhasDeConjunto || [])) linhas.push(Object.assign({conjunto:true}, r));
+  return linhas.sort((a,b)=>(Number(a.ordem)||0)-(Number(b.ordem)||0));
+}
+
+// registros da lista (itens agrupados + linhas de conjunto), já com origem, na ordem do documento
+function registrosDaLista(){
+  const itens = ordenarLista(groupsWithExtra(lastGrouped)).map(g => {
+    const base = (g.origem && g.origem[0]) || {};
+    const campos = [...new Set((g.origem||[]).flatMap(o => o.campos || []))];
+    const extras = Object.assign({}, ...((g.origem||[]).map(o => o.extras || {})));
+    const bruto = Object.assign({}, ...((g.origem||[]).map(o => o.bruto || {}).reverse()));
+    return {
+      item: base.item || "", qtd: g.qtd, especificacao: g.especificacao, descricao: g.descricao,
+      material: g.material, massa: g.massa, ordem: g.ordem, fonte: base.fonte,
+      campos: campos.length ? campos : null, extras, bruto,
+      // so sai "-" se nenhuma das linhas juntadas tinha massa; se uma tinha, a soma vale
+      massaAusente: (g.origem||[]).length ? (g.origem||[]).every(o => o.massaAusente) : false
+    };
+  });
+  const conjuntos = (linhasDeConjunto||[]).map(r => ({
+    item: r.item||"", qtd: r.qtd, especificacao: r.especificacao, descricao: r.descricao,
+    material: r.material, massa: r.massa, ordem: r.ordem, fonte: r.fonte,
+    campos: r.campos, extras: r.extras, bruto: r.bruto, massaAusente: r.massaAusente, conjunto:true
+  }));
+  return [...itens, ...conjuntos].sort((a,b)=>(Number(a.ordem)||0)-(Number(b.ordem)||0));
+}
+
+function buildPadraoOriginalSheet(){
+  const colunas = colunasDaLista();
+  const rows = registrosDaLista().map(reg => colunas.map(c => {
+    const v = valorDoCampo(reg, c.campo);
+    return v===null ? "-" : v;
+  }));
+  return {name:"Lista de material", headers: colunas.map(c=>c.titulo), rows};
+}
+
+// "separado" (padrão do formato original): uma aba por lista de origem; "junto": uma aba só
+function abasDoPadraoOriginal(){
+  const modo = els.abasOriginalSel ? els.abasOriginalSel.value : "separado";
+  return modo === "junto" ? [buildPadraoOriginalSheet()] : buildPadraoOriginalSheets();
+}
+
 function buildSimpleGenericSheet(rows, sheetName){
   const headers = ["Item","Qtd","Título/Especificação","Descrição/Spec","Material","Massa (kg)"];
   const dataRows = rows.map((g,i)=>[String(i+1), g.qtd, g.especificacao, g.descricao, g.material, Math.round((g.massa||0)*100)/100]);
@@ -1889,6 +2341,21 @@ function buildSimpleGenericSheet(rows, sheetName){
 // paginação (paginateConsolidadoOutro) usada pelo formato "Lista consolidada", pra não ter risco da prévia
 // mostrar uma coisa e o arquivo gerado sair com outra.
 function buildPreviewSections(content, format){
+  if(format==="original"){
+    const abas = abasDoPadraoOriginal();
+    if(abas.length > 1){
+      return abas.map(sh => ({
+        label: `${sh.name} — colunas: ${sh.headers.join(" | ")}`,
+        rows: sh.rows.map(r => ({especificacao:String(r[2]!=null?r[2]:""), descricao:String(r[3]!=null?r[3]:""),
+                                 material:String(r[4]!=null?r[4]:""), qtd:Number(r[1])||0}))
+      }));
+    }
+    const sh = abas[0];
+    const iEsp = sh.headers.findIndex((_,i)=>true);
+    return [{label:`Mesmo padrão do documento — colunas: ${sh.headers.join(" | ")}`,
+      rows: sh.rows.map(r => ({especificacao:String(r[2]!=null?r[2]:""), descricao:String(r[3]!=null?r[3]:""),
+                               material:String(r[4]!=null?r[4]:""), qtd:Number(r[1])||0}))}];
+  }
   if(content==="consolidado"){
     if(format==="consolidada"){
       return buildConsolidadoPages(buildConsolidadoCortavelRows(), buildConsolidadoOutroRows(), currentPageOpts())
@@ -1963,14 +2430,22 @@ els.exportFinalBtn.addEventListener("click", async ()=>{
     els.exportFinalStatus.textContent = "Gerando…"; els.exportFinalStatus.className = "status-msg";
     try{
       let blob, filename;
-      if(format==="consolidada"){
+      if(format==="original"){
+        blob = buildXlsxWorkbookBlob(abasDoPadraoOriginal());
+        filename = "lista_no_padrao_do_documento.xlsx";
+      } else if(format==="consolidada"){
         blob = await buildConsolidadoLLIXlsx(true, currentPageOpts());
         filename = "lista_consolidada_LLI.xlsx";
       } else if(format==="lista"){
-        blob = await buildListaXlsxFromTemplate([{name:"Área (m²)", rows:areaRows}, {name:"Comprimento (m)", rows:compRows}, {name:"Itens Soltos", rows:outroRows}]);
+        // tudo numa aba só (chapas, perfis/tubos e itens soltos juntos), na ordem da lista;
+        // o seletor "Abas — lista consolidada" separa em abas para quem preferir
+        const juntos = (els.pageModeSel && els.pageModeSel.value !== "unica")
+          ? [{name:"Área (m²)", rows:areaRows}, {name:"Comprimento (m)", rows:compRows}, {name:"Itens Soltos", rows:outroRows}]
+          : [{name:"Lista de material", rows:[...areaRows, ...compRows, ...outroRows]}];
+        blob = await buildListaXlsxFromTemplate(juntos);
         filename = "lista_consolidada_lista_preliminar.xlsx";
       } else {
-        blob = buildXlsxWorkbookBlob([buildChapasM2Sheet(), buildPerfisMSheet(), buildSimpleGenericSheet(outroRows, "Itens Soltos")]);
+        blob = buildXlsxWorkbookBlob([buildTudoNumaAbaSheet("Lista consolidada")]);
         filename = "lista_consolidada.xlsx";
       }
       await saveFile(filename, blob, els.exportFinalStatus);
@@ -2001,6 +2476,18 @@ els.exportFinalBtn.addEventListener("click", async ()=>{
     return;
   }
 
+
+  if(format==="original"){
+    els.exportFinalStatus.textContent = "Gerando…"; els.exportFinalStatus.className = "status-msg";
+    try{
+      await saveFile("lista_no_padrao_do_documento.xlsx",
+        buildXlsxWorkbookBlob(abasDoPadraoOriginal()), els.exportFinalStatus);
+    }catch(err){
+      els.exportFinalStatus.textContent = "Erro ao gerar: " + (err && err.message ? err.message : err);
+      els.exportFinalStatus.className = "status-msg err";
+    }
+    return;
+  }
 
   let rows, sheetName, filenameBase;
   if(content==="corte"){ rows = contentRowsResumoCorte(); sheetName = "Resumo de Corte"; filenameBase = "resumo_corte"; }
