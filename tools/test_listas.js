@@ -303,6 +303,33 @@ const esperar = ms => new Promise(r => setTimeout(r, ms));
     return true;
   });
 
+  await passo("planilha própria traz área e comprimento calculados", async () => {
+    const r = JSON.parse(await rodar(`(() => {
+      const sh = buildTudoNumaAbaSheet("Lista consolidada");
+      const iArea = sh.headers.indexOf("Área (m²)"), iComp = sh.headers.indexOf("Comprimento (m)");
+      const num = i => sh.rows.filter(l => typeof l[i] === "number").length;
+      const soma = i => sh.rows.reduce((t,l) => t + (typeof l[i] === "number" ? l[i] : 0), 0);
+      // o resumo da lista consolidada calcula os mesmos m² e m, só que agrupados por
+      // espessura/material — os totais têm que bater
+      const areaResumo = contentRowsAreaChapas().reduce((t,g) => t + (Number(g.qtd)||0), 0);
+      const compResumo = contentRowsComprimentoPerfis().reduce((t,g) => t + (Number(g.qtd)||0), 0);
+      return JSON.stringify({linhas: sh.rows.length, comArea: num(iArea), comComp: num(iComp),
+        somaArea: Math.round(soma(iArea)*100)/100, somaComp: Math.round(soma(iComp)*100)/100,
+        areaResumo: Math.round(areaResumo*100)/100, compResumo: Math.round(compResumo*100)/100});
+    })()`));
+    if (!r.comArea) throw new Error("nenhuma linha saiu com área");
+    if (!r.comComp) throw new Error("nenhuma linha saiu com comprimento");
+    const perto = (a,b) => Math.abs(a-b) <= Math.max(0.05, Math.abs(b)*0.02);
+    if (!perto(r.somaArea, r.areaResumo))
+      throw new Error(`área: ${r.somaArea} m² na planilha própria contra ${r.areaResumo} m² no resumo`);
+    if (!perto(r.somaComp, r.compResumo))
+      throw new Error(`comprimento: ${r.somaComp} m contra ${r.compResumo} m no resumo`);
+    console.log(`     (${r.comArea} linha(s) com área somando ${r.somaArea} m² · ` +
+                `${r.comComp} com comprimento somando ${r.somaComp} m · ` +
+                `${r.linhas - r.comArea - r.comComp} sem os dois, itens que não são cortados)`);
+    return true;
+  });
+
   if (process.argv.includes("--shot")) {
     const r = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
     fs.writeFileSync(path.join(os.tmpdir(), "p8_tela.png"), Buffer.from(r.result.data, "base64"));

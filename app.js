@@ -2178,18 +2178,42 @@ function contentRowsComprimentoPerfis(){
 // Tudo numa aba só: chapas (m²), perfis/tubos (m) e itens soltos na mesma planilha, na ordem
 // da lista. Cada linha preenche a coluna que faz sentido para ela e marca "-" nas outras —
 // é como a lista de material é lida na obra, sem precisar pular de aba em aba.
+// Área e comprimento de UMA linha da lista. Mesma regra do resumo em m²/m: vale a medida real
+// da peça (não a da chapa/barra comercial que vai ser comprada), multiplicada pela quantidade
+// daquela linha. Linha cuja Descrição não deu para interpretar fica sem valor, e sai "-" —
+// melhor do que mostrar um número inventado.
+function areaM2DaLinha(g, c){
+  if(!c || c.tipo !== "chapa" || !c.ok) return null;
+  const umaMm2 = c.circular ? Math.PI*Math.pow(c.diametro/2, 2) : c.width*c.height;
+  if(!isFinite(umaMm2)) return null;
+  return (umaMm2 * (Number(g.qtd)||0)) / 1e6;
+}
+function comprimentoMDaLinha(g, c){
+  if(!c || c.tipo !== "barra" || !c.ok || c.length == null) return null;
+  return (c.length * (Number(g.qtd)||0)) / 1000;
+}
+
+// Duas casas servem para a maioria, mas uma peça pequena viraria 0 e pareceria não calculada.
+// Então o número de casas acompanha o tamanho: 0,0039 m² sai 0,0039, e 0,14 m² sai 0,14.
+function medidaArredondada(v){
+  if(v == null || !isFinite(v)) return null;
+  const casas = Math.abs(v) >= 0.1 ? 2 : Math.abs(v) >= 0.01 ? 3 : 4;
+  const f = Math.pow(10, casas);
+  return Math.round(v*f)/f;
+}
+
 function buildTudoNumaAbaSheet(sheetName){
   const headers = ["Item","Qtd","Especificação","Descrição","Material","Área (m²)","Comprimento (m)","Massa (kg)"];
   const linhas = [];
   let n = 0;
   for(const g of ordenarLista(groupsWithExtra(lastGrouped))){
     const c = classifyGroup(g);
-    const chapa = c && c.tipo==="chapa";
-    const barra = c && c.tipo==="barra";
+    const area = areaM2DaLinha(g, c);
+    const comp = comprimentoMDaLinha(g, c);
     linhas.push([
       String(++n), g.qtd, g.especificacao, g.descricao, g.material,
-      chapa && c.areaM2!=null ? Math.round(c.areaM2*100)/100 : "-",
-      barra && c.comprimentoM!=null ? Math.round(c.comprimentoM*100)/100 : "-",
+      area != null ? medidaArredondada(area) : "-",
+      comp != null ? medidaArredondada(comp) : "-",
       Math.round((g.massa||0)*100)/100
     ]);
   }
