@@ -243,6 +243,66 @@ const esperar = ms => new Promise(r => setTimeout(r, ms));
     return true;
   });
 
+  /** o que a previa desenhou na tela, aba por aba */
+  const previaNaTela = async (conteudo, formato, modoAbas) => JSON.parse(await rodar(`(() => {
+    els.exportContentSel.value = ${JSON.stringify(conteudo)};
+    els.exportFormatSel.value = ${JSON.stringify(formato)};
+    if (${JSON.stringify(modoAbas)} && els.pageModeSel) els.pageModeSel.value = ${JSON.stringify(modoAbas)};
+    els.exportFormatSel.dispatchEvent(new Event("change", {bubbles:true}));
+    els.previewBtn.click();
+    return JSON.stringify([...document.querySelectorAll("#previewBody .preview-page")].map(p => ({
+      titulo: p.querySelector("h4").textContent.trim(),
+      colunas: [...p.querySelectorAll("thead th")].map(t => t.textContent.trim()),
+      linhas: p.querySelectorAll("tbody tr").length
+    })));
+  })()`));
+
+  await passo("prévia mostra tudo numa aba só quando é isso que foi pedido", async () => {
+    const abas = await previaNaTela("consolidado", "lista", "unica");
+    if (abas.length !== 1) throw new Error("a prévia mostrou " + abas.length + " blocos: " +
+      abas.map(a => a.titulo).join(" / "));
+    if (abas[0].colunas.length !== 6) throw new Error("colunas na prévia: " + abas[0].colunas.join(" | "));
+    const doPlano = JSON.parse(await rodar(`JSON.stringify(planoDeExportacao("consolidado","lista")
+      .map(a => ({nome:a.name, linhas:a.rows.length})))`));
+    if (doPlano.length !== 1 || doPlano[0].linhas !== abas[0].linhas)
+      throw new Error("a prévia não bate com o plano de exportação");
+    console.log(`     (1 aba "${doPlano[0].nome}" · ${abas[0].linhas} linhas · ${abas[0].colunas.join(" | ")})`);
+    return true;
+  });
+
+  await passo("pedindo separado, a prévia separa", async () => {
+    const abas = await previaNaTela("consolidado", "lista", "auto");
+    if (abas.length < 2) throw new Error("a prévia continuou com " + abas.length + " bloco(s)");
+    console.log("     (" + abas.map(a => a.titulo.split("·")[1].trim() + ": " + a.linhas).join(" · ") + ")");
+    return true;
+  });
+
+  await passo("prévia do padrão do documento traz as colunas de cada lista", async () => {
+    const abas = await previaNaTela("consolidado", "original", null);
+    if (abas.length !== 7) throw new Error("abas na prévia: " + abas.length);
+    const seis = abas.every(a => a.colunas.length === 6);
+    if (!seis) throw new Error("colunas diferentes do documento: " + abas.map(a=>a.colunas.length).join(","));
+    if (!abas.some(a => a.titulo.includes("SUPORTE 1"))) throw new Error("nomes de aba não vieram: " +
+      abas.map(a=>a.titulo).join(" / "));
+    return true;
+  });
+
+  await passo("prévia bate com o arquivo gerado", async () => {
+    await rodar(`els.exportContentSel.value="consolidado"; els.exportFormatSel.value="lista";
+                 if(els.pageModeSel) els.pageModeSel.value="unica";`);
+    const r = JSON.parse(await rodar(`(async () => {
+      const plano = planoDeExportacao("consolidado", "lista");
+      const blob = await buildListaXlsxFromTemplate(plano.map(a => ({name:a.name, rows:a.fonte})));
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      let t = ""; for (let i = 0; i < buf.length; i++) t += String.fromCharCode(buf[i]);
+      return JSON.stringify({abas: plano.map(a => ({nome:a.name, linhas:a.rows.length})), b64: btoa(t)});
+    })()`));
+    fs.writeFileSync(path.join(os.tmpdir(), "p8_previa.xlsx"), Buffer.from(r.b64, "base64"));
+    if (r.abas.length !== 1) throw new Error("plano com " + r.abas.length + " abas");
+    console.log(`     (arquivo salvo em ${path.join(os.tmpdir(), "p8_previa.xlsx")} — 1 aba, ${r.abas[0].linhas} linhas)`);
+    return true;
+  });
+
   if (process.argv.includes("--shot")) {
     const r = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
     fs.writeFileSync(path.join(os.tmpdir(), "p8_tela.png"), Buffer.from(r.result.data, "base64"));

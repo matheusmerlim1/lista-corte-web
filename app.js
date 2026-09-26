@@ -2341,79 +2341,111 @@ function buildSimpleGenericSheet(rows, sheetName){
   return {name:sheetName, headers, rows:dataRows};
 }
 
-/* ---------------- pré-visualização (antes de gerar o Excel) ---------------- */
-// monta as mesmas seções/abas que a geração real vai escrever, na mesma ordem — reaproveita
-// os geradores de linha (contentRows*, buildConsolidadoCortavelRows/OutroRows) e a mesma
-// paginação (paginateConsolidadoOutro) usada pelo formato "Lista consolidada", pra não ter risco da prévia
-// mostrar uma coisa e o arquivo gerado sair com outra.
-function buildPreviewSections(content, format){
+/* ---------------- o que vai ser escrito: abas, colunas e linhas ---------------- */
+// Uma descrição só do documento final. A pré-visualização desenha isto e a geração do
+// arquivo escreve isto, então não tem como a prévia mostrar uma organização e o arquivo
+// sair com outra. `rows` são as células já formatadas (é o que a prévia mostra) e `fonte`
+// são as linhas cruas, do jeito que os modelos de planilha esperam receber.
+// Estes são os títulos que estão dentro dos modelos de planilha embutidos: a ferramenta
+// escreve as linhas por baixo deles e não os altera. A prévia mostra os mesmos, para a
+// pessoa ver a planilha como ela vai abrir no Excel.
+const COLS_LISTA_PRELIMINAR = ["Item","Qtd.","TitlePT","SPECPT","MaterialPT","Massa (Kg)"];
+const COLS_LLI = CONSOLIDADA_HEADERS;
+const arred2 = v => (typeof v === "number" && isFinite(v)) ? Math.round(v*100)/100 : v;
+
+function linhasListaPreliminar(rows, inicio=1){
+  return rows.map((g,i)=>[String(inicio+i), arred2(g.qtd||0), g.especificacao||"", g.descricao||"",
+                          g.material||"", arred2(g.massa||0)]);
+}
+function linhasLLI(rows, inicio=1){
+  return rows.map((g,i)=>[inicio+i, g.especificacao||"",
+    g.area!=null ? arred2(g.area) : "-", g.comprimento!=null ? arred2(g.comprimento) : "-",
+    g.material||"", g.qty!=null ? arred2(g.qty) : "-"]);
+}
+
+// abas vazias não entram: não faz sentido escrever (nem mostrar) uma aba "Itens Soltos" sem
+// nenhum item solto
+function planoDeExportacao(content, format){
+  const abas = planoBruto(content, format);
+  return abas.filter(a => a.rows.length);
+}
+
+function planoBruto(content, format){
   if(format==="original"){
-    const abas = abasDoPadraoOriginal();
-    if(abas.length > 1){
-      return abas.map(sh => ({
-        label: `${sh.name} — colunas: ${sh.headers.join(" | ")}`,
-        rows: sh.rows.map(r => ({especificacao:String(r[2]!=null?r[2]:""), descricao:String(r[3]!=null?r[3]:""),
-                                 material:String(r[4]!=null?r[4]:""), qtd:Number(r[1])||0}))
-      }));
-    }
-    const sh = abas[0];
-    const iEsp = sh.headers.findIndex((_,i)=>true);
-    return [{label:`Mesmo padrão do documento — colunas: ${sh.headers.join(" | ")}`,
-      rows: sh.rows.map(r => ({especificacao:String(r[2]!=null?r[2]:""), descricao:String(r[3]!=null?r[3]:""),
-                               material:String(r[4]!=null?r[4]:""), qtd:Number(r[1])||0}))}];
+    return abasDoPadraoOriginal().map(sh => ({name:sh.name, headers:sh.headers, rows:sh.rows}));
   }
+
   if(content==="consolidado"){
     if(format==="consolidada"){
+      // a numeração do "Item No." é contínua entre as abas, não reinicia a cada página
+      let n = 1;
       return buildConsolidadoPages(buildConsolidadoCortavelRows(), buildConsolidadoOutroRows(), currentPageOpts())
-        .map(p=>({
-          label: p.tipo==="cortavel"
-            ? `Aba "${p.name}" — itens cortáveis (chapas + perfis/tubos)`
-            : `Aba "${p.name}" — itens soltos`,
-          rows: p.rows,
-        }));
+        .map(p => {
+          const aba = {name:p.name, headers:COLS_LLI, rows:linhasLLI(p.rows, n), fonte:p.rows,
+                       nota: p.tipo==="cortavel" ? "itens cortáveis (chapas + perfis/tubos)" : "itens soltos"};
+          n += p.rows.length;
+          return aba;
+        });
     }
-    return [
-      {label:"Chapas — Área (m²)", rows:contentRowsAreaChapas()},
-      {label:"Perfis/Tubos — Comprimento (m)", rows:contentRowsComprimentoPerfis()},
-      {label:"Itens soltos", rows:contentRowsOutro()},
-    ];
+    const areaRows = contentRowsAreaChapas();
+    const compRows = contentRowsComprimentoPerfis();
+    const outroRows = contentRowsOutro();
+    if(format==="lista"){
+      const grupos = (els.pageModeSel && els.pageModeSel.value !== "unica")
+        ? [{name:"Área (m²)", rows:areaRows}, {name:"Comprimento (m)", rows:compRows}, {name:"Itens Soltos", rows:outroRows}]
+        : [{name:"Lista de material", rows:[...areaRows, ...compRows, ...outroRows],
+            nota:"chapas, perfis/tubos e itens soltos juntos, na ordem da lista \u2014 o modelo ainda traz a linha de título \u201cBOM Table(Restructured)\u201d acima do cabeçalho"}];
+      return grupos.map(g => ({name:g.name, headers:COLS_LISTA_PRELIMINAR,
+                               rows:linhasListaPreliminar(g.rows), fonte:g.rows, nota:g.nota}));
+    }
+    const sh = buildTudoNumaAbaSheet("Lista consolidada");
+    return [{name:sh.name, headers:sh.headers, rows:sh.rows,
+             nota:"chapas, perfis/tubos e itens soltos juntos"}];
   }
-  if(content==="corte") return [{label:"Resumo de corte (ordem do plano de corte)", rows:contentRowsResumoCorte()}];
-  if(content==="outro") return [{label:"Itens soltos", rows:contentRowsOutro()}];
-  return [{label:"Lista compactada", rows:contentRowsCompactada()}];
+
+  const rows = content==="corte" ? contentRowsResumoCorte()
+             : content==="outro" ? contentRowsOutro()
+             : contentRowsCompactada();
+  const nome = content==="corte" ? "Resumo de Corte"
+             : content==="outro" ? "Itens Soltos" : "Lista Compactada";
+  if(format==="lista")      return [{name:"Sheet1", headers:COLS_LISTA_PRELIMINAR, rows:linhasListaPreliminar(rows), fonte:rows}];
+  if(format==="consolidada") return [{name:"LLI", headers:COLS_LLI, rows:linhasLLI(rows), fonte:rows}];
+  const sh = buildSimpleGenericSheet(rows, nome);
+  return [{name:sh.name, headers:sh.headers, rows:sh.rows}];
 }
-// cada linha de conteúdo pode ter a quantidade num campo diferente (qtd, área, comprimento ou
-// qty) dependendo de que gerador a produziu — mostra o que estiver preenchido.
-function previewRowValue(r){
-  if(r.area!=null) return fmt(r.area,2)+" m²";
-  if(r.comprimento!=null) return fmt(r.comprimento,2)+" m";
-  if(r.qty!=null) return fmt(r.qty,2);
-  if(r.qtd!=null) return fmt(r.qtd,2);
-  return "—";
-}
-function renderPreviewSection(label, rows){
-  if(!rows.length) return "";
-  let html = `<div class="preview-page"><h4>${escapeHtml(label)}<span class="preview-count">${rows.length} item(ns)</span></h4>`;
-  html += `<div class="table-wrap"><table class="data-table"><thead><tr><th class="num">#</th><th>Especificação</th><th>Descrição</th><th>Material</th><th class="num">Qtd / Medida</th></tr></thead><tbody>`;
-  rows.forEach((r,i)=>{
-    html += `<tr><td class="num">${i+1}</td><td>${escapeHtml(r.especificacao)}</td><td>${escapeHtml(r.descricao||"")}</td><td>${escapeHtml(r.material)}</td><td class="num">${previewRowValue(r)}</td></tr>`;
-  });
+
+/* ---------------- pré-visualização (antes de gerar o Excel) ---------------- */
+function renderPreviewSheet(aba, i, total){
+  const titulo = total > 1 ? `Aba ${i+1} de ${total} · “${aba.name}”` : `Aba única · “${aba.name}”`;
+  const resumo = `${aba.headers.length} coluna(s) · ${aba.rows.length} linha(s)`;
+  let html = `<div class="preview-page"><h4>${escapeHtml(titulo)}<span class="preview-count">${resumo}</span></h4>`;
+  if(aba.nota) html += `<p class="help" style="margin:-4px 0 8px;">${escapeHtml(aba.nota)}</p>`;
+  html += `<div class="table-wrap"><table class="data-table"><thead><tr>`;
+  html += aba.headers.map(h => `<th>${escapeHtml(String(h))}</th>`).join("");
+  html += `</tr></thead><tbody>`;
+  for(const linha of aba.rows){
+    html += "<tr>" + linha.map(c => {
+      const num = typeof c === "number";
+      return `<td class="${num ? "num" : ""}">${escapeHtml(c==null ? "" : String(c))}</td>`;
+    }).join("") + "</tr>";
+  }
   html += `</tbody></table></div></div>`;
   return html;
 }
 els.previewBtn.addEventListener("click", ()=>{
-  const content = els.exportContentSel.value;
-  const format = els.exportFormatSel.value;
-  const sections = buildPreviewSections(content, format);
-  const total = sections.reduce((s,sec)=>s+sec.rows.length, 0);
+  const abas = planoDeExportacao(els.exportContentSel.value, els.exportFormatSel.value);
+  const linhas = abas.reduce((t,a)=>t+a.rows.length, 0);
   // a prévia mostra a quantidade final (já com o extra) — deixa isso explícito pra ninguém
   // achar que está vendo a quantidade consolidada "crua"
   const nExtra = lastGrouped.filter(g=>extraPctOf(g)!==0).length;
   const notaExtra = nExtra
     ? `<p class="help" style="margin-bottom:12px;">As quantidades abaixo já incluem o <b>extra (%)</b> aplicado em ${nExtra} item(ns) na seção 2.</p>`
     : "";
-  els.previewBody.innerHTML = total
-    ? notaExtra + sections.map(s=>renderPreviewSection(s.label, s.rows)).join("")
+  const cabecalho = abas.length
+    ? `<p class="help" style="margin-bottom:12px;">A planilha vai sair com <b>${abas.length} aba(s)</b> e ${linhas} linha(s) de dados, assim:</p>`
+    : "";
+  els.previewBody.innerHTML = linhas
+    ? cabecalho + notaExtra + abas.map((a,i)=>renderPreviewSheet(a, i, abas.length)).join("")
     : `<p class="help">Nada para pré-visualizar com essa combinação de conteúdo.</p>`;
   els.previewPanel.hidden = false;
   if(typeof els.previewPanel.scrollIntoView === "function") els.previewPanel.scrollIntoView({behavior:"smooth", block:"start"});
@@ -2443,12 +2475,10 @@ els.exportFinalBtn.addEventListener("click", async ()=>{
         blob = await buildConsolidadoLLIXlsx(true, currentPageOpts());
         filename = "lista_consolidada_LLI.xlsx";
       } else if(format==="lista"){
-        // tudo numa aba só (chapas, perfis/tubos e itens soltos juntos), na ordem da lista;
-        // o seletor "Abas — lista consolidada" separa em abas para quem preferir
-        const juntos = (els.pageModeSel && els.pageModeSel.value !== "unica")
-          ? [{name:"Área (m²)", rows:areaRows}, {name:"Comprimento (m)", rows:compRows}, {name:"Itens Soltos", rows:outroRows}]
-          : [{name:"Lista de material", rows:[...areaRows, ...compRows, ...outroRows]}];
-        blob = await buildListaXlsxFromTemplate(juntos);
+        // as mesmas abas que a pré-visualização mostrou (uma só, ou uma por categoria se o
+        // seletor "Abas — lista consolidada" pedir separado)
+        blob = await buildListaXlsxFromTemplate(
+          planoDeExportacao(content, format).map(a => ({name:a.name, rows:a.fonte})));
         filename = "lista_consolidada_lista_preliminar.xlsx";
       } else {
         blob = buildXlsxWorkbookBlob([buildTudoNumaAbaSheet("Lista consolidada")]);
