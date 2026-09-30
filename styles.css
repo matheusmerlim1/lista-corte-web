@@ -296,3 +296,54 @@
 .paste-box__icon{ font-size:34px; line-height:1; margin-bottom:6px; color:var(--accent); }
 .paste-box__txt{ font-size:16px; font-weight:700; color:var(--ink); }
 .paste-box__sub{ font-size:13px; opacity:.75; margin-top:4px; color:var(--ink); }
+
+/* item escrito numa linha (seção 2): a ferramenta separa as colunas sozinha */
+.quick-item{ margin-top:12px; }
+.quick-item__input{
+  width:100%; box-sizing:border-box; font-family:"IBM Plex Mono",monospace; font-size:12.5px;
+  color:var(--ink); background:var(--surface-2); border:1px solid var(--border);
+  border-radius:8px; padding:9px 12px;
+}
+.quick-item__input:focus{ border-color:var(--accent); outline:none; }
+.quick-item__lido{ margin:6px 0 0; min-height:0; }
+.quick-item__lido:empty{ display:none; }
+
+/* ajuda para escrever: cada campo tem uma cor, a mesma no exemplo, no resultado e na prévia */
+.wkey{
+  --wk:var(--muted); --wk-soft:var(--surface-2);
+  display:inline-flex; flex-direction:column; gap:1px; padding:3px 8px; border-radius:6px;
+  background:var(--wk-soft); color:var(--ink); border:1px solid var(--wk);
+  font-size:12.5px; line-height:1.3; margin:2px 4px 2px 0; vertical-align:top; max-width:100%;
+  overflow-wrap:anywhere;
+}
+.wkey small{ font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--wk); }
+mark.wkey{ display:inline; padding:1px 5px; margin:0; font-family:"IBM Plex Mono",monospace; }
+.wkey--qtd{ --wk:var(--accent); --wk-soft:var(--accent-soft); }
+.wkey--tit{ --wk:var(--oxide); --wk-soft:var(--oxide-soft); }
+.wkey--esp{ --wk:var(--good); --wk-soft:var(--good-soft); }
+.wkey--norma{ --wk:var(--warn); --wk-soft:var(--warn-soft); }
+.wkey--mat{ --wk:var(--ink); --wk-soft:var(--surface); }
+.wkey--med{ --wk:var(--muted); --wk-soft:var(--surface-2); border-style:dashed; }
+.wkey--un{ --wk:var(--accent-ink); --wk-soft:var(--surface); border-style:dotted; }
+.wkey--aviso{ --wk:var(--bad); --wk-soft:var(--bad-soft); }
+
+.wprev{ margin-top:8px; }
+.wprev:empty{ display:none; }
+.wprev__titulo{ font-size:12px; color:var(--muted); margin-bottom:2px; }
+.wprev__item{ padding:4px 0; border-bottom:1px dashed var(--border); }
+.wprev__item:last-child{ border-bottom:0; }
+
+.whelp{ margin-top:10px; border:1px solid var(--border); border-radius:8px; background:var(--surface); }
+.whelp > summary{ cursor:pointer; padding:8px 12px; font-size:13px; font-weight:600; color:var(--accent); }
+.whelp[open] > summary{ border-bottom:1px solid var(--border); }
+.whelp > :not(summary){ margin-left:12px; margin-right:12px; }
+.whelp__ex{ padding:10px 0; border-bottom:1px dashed var(--border); }
+.whelp__linha{ font-family:"IBM Plex Mono",monospace; font-size:12.5px; line-height:2; }
+.whelp__seta{ font-size:12px; color:var(--muted); margin:2px 0; }
+.whelp__chaves{ margin:10px 0 12px; font-size:12.5px; }
+.whelp__chaves td{ vertical-align:top; }
+.whelp__chaves code{ display:inline-block; margin:1px 4px 1px 0; padding:0 4px; border-radius:4px;
+  background:var(--surface-2); font-family:"IBM Plex Mono",monospace; font-size:12px; }
+.btn-link{ background:none; border:0; padding:4px 0; color:var(--accent); cursor:pointer;
+  font:inherit; font-size:12.5px; text-decoration:underline; }
+.whelp__chaves td:first-child{ white-space:nowrap; }

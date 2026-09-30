@@ -40,12 +40,37 @@ function fmt(v, d=2){
 }
 function toNumBR(s){
   if(s==null) return NaN;
+  if(typeof s === "number") return s;      // célula numérica do .xlsx: já é número
   s = String(s).trim();
-  if(/^\d{1,3}(\.\d{3})*(,\d+)?$/.test(s)) s = s.replace(/\./g,"").replace(",", ".");
+  // "0.495" não é milhar (milhar nunca começa com zero): é decimal com ponto
+  if(/^[1-9]\d{0,2}(\.\d{3})+(,\d+)?$/.test(s) || /^\d{1,3}(,\d+)$/.test(s)) s = s.replace(/\./g,"").replace(",", ".");
   else s = s.replace(",", ".");
   return parseFloat(s);
 }
 function toNumFlex(s){ return parseFloat(String(s).replace(",", ".")); }
+
+// Cada documento escreve número de um jeito: "13,2" (padrão brasileiro), "13.2" ou
+// "8.912 kg" (exportação do SolidWorks, com a unidade junto). O separador decimal é decidido
+// pela COLUNA inteira, não célula a célula — "1.264" sozinho é ambíguo, mas numa coluna em
+// que também aparece "0.36199999" ou "13.2" ele só pode ser decimal.
+function decimalDaColuna(valores){
+  let ponto = false;
+  for(const v of valores){
+    if(v==null || typeof v === "number") continue;
+    const s = String(v).trim();
+    if(/\d,\d/.test(s)) return ",";
+    if(/^0\.\d/.test(s) || /\d\.\d{1,2}(?!\d)/.test(s) || /\d\.\d{4,}/.test(s)) ponto = true;
+  }
+  return ponto ? "." : ",";
+}
+// número de uma célula, tirando a unidade escrita junto ("8.912 kg", "1855 mm", "0,09 m²")
+function lerNumero(v, dec){
+  if(v==null) return NaN;
+  if(typeof v === "number") return v;
+  const s = String(v).trim().replace(/\s*(kg|g|m²|m2|mm²|mm2|m|mm|un|pç|pc|pcs)\.?$/i, "");
+  if(dec === ".") return parseFloat(s.replace(/,/g, ""));
+  return toNumBR(s);
+}
 
 // "-", "–", "n/a", vazio: valor não informado na planilha. Numa lista de material isso é
 // comum na coluna Massa (junta, parafuso, tampão: o desenhista não preenche o peso) e não
@@ -53,16 +78,16 @@ function toNumFlex(s){ return parseFloat(String(s).replace(",", ".")); }
 const SEM_VALOR_RE = /^\s*(-+|–|—|n\/?a|na|nd|n\.d\.?|\?)\s*$/i;
 function semValor(s){ return s==null || String(s).trim()==="" || SEM_VALOR_RE.test(String(s)); }
 // massa: não informada vira 0 (a lista continua somando o resto)
-function massaDaCelula(v){
+function massaDaCelula(v, dec){
   if(semValor(v)) return 0;
-  const n = toNumBR(v);
+  const n = lerNumero(v, dec);
   return isNaN(n) ? 0 : n;
 }
 // quantidade: não informada vira 1 (linha de conjunto ou campo em branco), e quem chamou
 // recebe o aviso para conferir
-function qtdDaCelula(v){
+function qtdDaCelula(v, dec){
   if(semValor(v)) return {qtd:1, suposta:true};
-  const n = toNumBR(v);
+  const n = lerNumero(v, dec);
   if(isNaN(n)) return {qtd:1, suposta:true};
   return {qtd:n, suposta:false};
 }
@@ -189,15 +214,43 @@ function groupsWithExtra(list){ return list.map(groupWithExtra); }
 // uma traz "Item | Qtd. | Título | Especificação | Material | Massa", outra troca Material de
 // lugar, outra chama o detalhe de "Descrição". Aqui o cabeçalho é lido pelo NOME de cada
 // coluna, então listas diferentes se juntam na mesma consolidação sem embaralhar campo.
+// Além dos papéis de texto, a lista pode trazer valores já calculados pelo desenho
+// (Comprimento unitário, Área unitária, Massa unitária) — eles têm prioridade sobre o que a
+// ferramenta conseguiria deduzir da descrição.
 const COLUNAS_CONHECIDAS = [
   {campo:"item",         termos:["item no","item nº","item n","item", "pos.", "posicao", "posição", "ref"]},
-  {campo:"qtd",          termos:["qtd","qtde","quant","quantidade","qty","q."]},
+  {campo:"qtd",          termos:["qtd","qtde","quant","quantidade","quantity","qty","q."]},
+  {campo:"codigo",       termos:["part number","part no","part n","part","codigo","cod.","cod","p/n","pn","numero da peca"]},
   {campo:"titulo",       termos:["titulo","título","denominacao","denominação","nome","tipo","componente"]},
-  {campo:"especificacao",termos:["especificacao","especificação","spec","especificacoes","especificações"]},
-  {campo:"descricao",    termos:["descricao","descrição","detalhe","dimensoes","dimensões","observacao","observação"]},
+  {campo:"especificacao",termos:["especificacao","especificação","spec","specification","especificacoes","especificações"]},
+  {campo:"descricao",    termos:["descricao","descrição","description","detalhe","observacao","observação"]},
+  {campo:"dimensoes",    termos:["dimensoes","dimensions","dimension","dimensao","medidas","medida","size","tamanho"]},
+  {campo:"comprimento",  termos:["comprimento","comp.","length","compr."]},
+  {campo:"area",         termos:["area","área","superficie"]},
   {campo:"material",     termos:["material","mat.","materia prima","matéria-prima"]},
-  {campo:"massa",        termos:["massa","peso","weight","kg"]}
+  {campo:"acabamento",   termos:["acabamento","tratamento","treating","treatment","finish","coating","revestimento","pintura"]},
+  {campo:"norma",        termos:["norma","standard","norm"]},
+  {campo:"massa",        termos:["massa","mass","peso","weight","kg"]}
 ];
+// a coluna numérica vale por peça ou pelo total da linha? O título diz ("Massa unitária",
+// "Peso total"). Sem qualificador: "Massa"/"Peso" das listas em português são o total da
+// linha (é como a ferramenta sempre leu); "Mass"/"Weight" do SolidWorks são por peça — a
+// propriedade de massa do componente —, e área/comprimento de peça são sempre por peça.
+function modoDaColuna(titulo, campo){
+  const t = normCabec(titulo);
+  if(/\btotal\b/.test(t)) return "total";
+  if(/\bunit|\bunid|\bun\b|\bpor peca\b|\beach\b|\bea\b/.test(t)) return "unit";
+  if(campo==="massa") return /^(mass|weight)\b/.test(t) ? "unit" : "total";
+  return "unit";
+}
+// unidade escrita no título: "Comprimento (mm)", "Área (mm²)" — o padrão é m e m²
+function escalaDaColuna(titulo, campo){
+  const t = String(titulo||"").toLowerCase();
+  if(campo==="comprimento") return /\bmm\b/.test(t) ? 1/1000 : /\bcm\b/.test(t) ? 1/100 : 1;
+  if(campo==="area") return /mm²|mm2/.test(t) ? 1/1e6 : /cm²|cm2/.test(t) ? 1/1e4 : 1;
+  if(campo==="massa") return /\(\s*t\s*\)|\bton\b/.test(t) ? 1000 : /\(\s*g\s*\)/.test(t) ? 1/1000 : 1;
+  return 1;
+}
 function normCabec(s){
   return String(s==null?"":s).toLowerCase()
     .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
@@ -237,6 +290,347 @@ function papeisDaLinha(valores){
   const unica = titulo || esp || desc;                             // só uma coluna de texto:
   return {tipo:unica, detalhe:unica};                              // ela serve de tipo e de detalhe
 }
+// Palavras que dizem O QUE a peça é. Servem para achar, entre as colunas de texto, a que
+// traz o tipo — num BOM do SolidWorks é a "DESCRIPTION" ("CHAPA", "PARAFUSO SEXTAVADO"),
+// enquanto a "Specification" traz a norma ("ISO 4017") e a "Dimensions" traz a medida.
+const PALAVRAS_DE_TIPO = ["chapa","perfil","cantoneira","barra","tubo","viga","vergalh","parafuso","porca",
+  "arruela","abracadeira","junta","flange","prisioneiro","eslinga","cabo","grade","curva","luva","niple",
+  "valvula","placa","suporte","pino","rebite","chumbador","tampa","anel","trilho","eletroduto","cotovelo","te "];
+function pontosDeTipo(valores){
+  let pontos = 0, n = 0;
+  for(const v of valores){
+    const s = normCabec(v);
+    if(!s) continue;
+    n++;
+    if(PALAVRAS_DE_TIPO.some(p => s.startsWith(p) || s.includes(" "+p))) pontos += 2;
+    if(!/\d/.test(s)) pontos += 1;
+  }
+  return n ? pontos/n : -1;
+}
+// Com uma coluna própria de medidas (Dimensions / Dimensões / Medidas), ela é o detalhe, e o
+// tipo é a coluna de texto que mais parece nome de peça. As outras colunas de texto (a norma,
+// no BOM do SolidWorks) viram complemento: entram na chave de agrupamento, porque arruela
+// DIN 25201 e arruela DIN 25201-4 não são a mesma peça.
+function resolverPapeis(tabela, inicio, mapa){
+  if(mapa.dimensoes === undefined) return null;
+  const candidatos = ["titulo","descricao","especificacao"].filter(c => mapa[c] !== undefined);
+  if(!candidatos.length) return {tipo:null, complemento:[]};
+  const pontos = c => pontosDeTipo(tabela.slice(inicio).map(l => (l||[])[mapa[c]]));
+  const tipo = candidatos.reduce((a, b) => pontos(b) > pontos(a) ? b : a);
+  return {tipo, complemento: candidatos.filter(c => c !== tipo)};
+}
+// é chapa/perfil/tubo (cortado de material comercial)?
+function tipoCortavel(tipo){
+  const s = String(tipo||"").toLowerCase();
+  return s.includes("chapa") || BARRA_KEYWORDS.some(k => s.includes(k));
+}
+// O desenho às vezes deixa a espessura ou o tamanho da chapa só no código da peça
+// ("CHAPA-3-8IN-2" = 3/8", "CHAPA-300x300" = 300 × 300) e a coluna de medida vem pela metade
+// ("120mm x 230mm", só "1/2\""). Sem a espessura, duas chapas de 120 × 230 de espessuras
+// diferentes cairiam no mesmo grupo — então o que faltar é completado a partir do código.
+function completarChapaPeloCodigo(detalhe, codigo){
+  const cod = String(codigo||"");
+  if(!cod) return detalhe;
+  let d = String(detalhe||"").trim();
+  const temEspessura = /\d+\s*\/\s*\d+\s*"|\(\s*\d+(?:[.,]\d+)?\s*mm\s*\)|#\s*\d/.test(d);
+  if(!temEspessura){
+    const m = cod.match(/(?:^|[^\d])(\d{1,2})-(\d{1,2})\s*IN\b/i) || cod.match(/(\d{1,2})\s*\/\s*(\d{1,2})\s*"/);
+    if(m && Number(m[2])) d = `#${m[1]}/${m[2]}"` + (d ? " x " + d : "");
+  }
+  const semFracao = d.replace(/#?\d+(?:\.\d+)?\s*\/\s*\d+\s*"/g, " ").replace(/\(\s*\d+(?:[.,]\d+)?\s*mm\s*\)/gi, " ");
+  const numeros = semFracao.match(/\d+(?:[.,]\d+)?/g) || [];
+  if(numeros.length < 2 && !/Ø/.test(d)){
+    const m = cod.match(/(\d{2,4})\s*[xX×]\s*(\d{2,4})/);
+    if(m) d = `${d} x ${m[1]} x ${m[2]} mm`.trim();
+  }
+  return d;
+}
+
+/* ---------------- item escrito à mão, em texto livre ---------------- */
+// "TUBO Ø1.1/2'' SCH. 40 ASME B 36.10 ASTM A106 Gr.B - Comprimento total 113,7 m" vira
+// Título "Tubo" · Especificação "Ø1.1/2\" SCH.40" · Norma "ASME B36.10" · Material
+// "ASTM A106 Gr.B" · comprimento total 113,7 m. O que vem com rótulo ("Qtd: 4", "Material:
+// AISI 316", "Massa 12 kg") vale como dito; o resto é reconhecido pelo formato.
+const NUM_RE = "(\\d+(?:[.,]\\d+)?)";
+const NORMA_RE = /\b(?:(?:ASME|ANSI)\s*B\s*\d+(?:\.\d+)*M?|(?:DIN|ISO|NBR|EN|MSS\s*SP|BS|JIS)\s*[-\s]?\d+(?:[-.]\d+)*[A-Z]?|API\s*\d+[A-Z]*)\b/gi;
+const MATERIAL_RES = [
+  /\bASTM\s*A\s*-?\d+[A-Z]?(?:\s*(?:Gr\.?|Grau|Grade)\s*[A-Z0-9]+)*(?:\s*TP\s*\d+L?)?\b/i,
+  /\b(?:AISI|SAE|ABNT)\s*\d{3,4}[A-Z]?\b/i,
+  /\bA\s?(?:36|572(?:\s*Gr\.?\s*50)?|131(?:\s*Gr\.?\s*[A-Z]{2}\d+)?)\b/i,
+  /\ba[çc]o\s+(?:carbono|inox(?:id[aá]vel)?|galvanizado|liga|ferramenta)\b/i,
+  /\b(?:inox|alum[ií]nio|lat[aã]o|cobre|nylon|poliamida|PVC|PEAD|borracha|neoprene)\b/i,
+];
+// unidades aceitas no texto escrito, e o fator para a unidade de trabalho (m, m², kg)
+const FATOR_COMP = {mm:0.001, cm:0.01, m:1, km:1000, pol:0.0254, ft:0.3048};
+const FATOR_AREA = {"mm²":1e-6, "cm²":1e-4, "m²":1};
+const FATOR_MASSA = {g:0.001, kg:1, t:1000};
+const UNID_COMP_RE = /(mm|cm|km|metros?|mts?|m|pol(?:egadas?)?|"|in|ft|p[ée]s)(?![²2\p{L}\/])/iu;
+const UNID_AREA_RE = /(mm²|mm2|cm²|cm2|m²|m2)/i;
+const UNID_MASSA_RE = /(kg|g|toneladas?|ton|t)(?![\p{L}\/])/iu;
+function normUnidade(u){
+  const s = String(u||"").toLowerCase();
+  if(/^(metros?|mts?|m)$/.test(s)) return "m";
+  if(/^(pol|polegadas?|"|in)$/.test(s)) return "pol";
+  if(/^(ft|p[ée]s)$/.test(s)) return "ft";
+  if(/^mm(²|2)$/.test(s)) return "mm²";
+  if(/^cm(²|2)$/.test(s)) return "cm²";
+  if(/^m(²|2)$/.test(s)) return "m²";
+  if(/^(t|ton|toneladas?)$/.test(s)) return "t";
+  return s;
+}
+// unidade escrita logo depois do último número do trecho (null = não escrita)
+function unidadeEscrita(trecho, re){
+  const m = String(trecho).match(new RegExp("\\d\\s*" + re.source + "\\s*$", re.flags));
+  return m ? normUnidade(m[1]) : null;
+}
+function tituloCurto(s){
+  const t = String(s||"").trim();
+  // "TUBO" escrito todo em maiúscula fica "Tubo", como nas listas de material
+  return t && t === t.toUpperCase() && /[A-ZÀ-Ú]{2}/.test(t) ? t.charAt(0) + t.slice(1).toLowerCase() : t;
+}
+function interpretarItemEscrito(texto){
+  let s = " " + String(texto||"")
+    .replace(/[″”“]|''|´´|``/g, '"').replace(/[′’‘]/g, "'")
+    .replace(/[\r\n]+/g, " ; ") + " ";
+  const achado = {qtd:null, massa:null, massaUnit:false, material:"", norma:[], comprimento:null,
+                  comprimentoTotal:false, area:null, areaTotal:false, unidadeComprimento:null, suposto:[]};
+  const tirar = re => { const m = s.match(re); if(m) s = s.replace(m[0], " ; "); return m; };
+
+  // valores com rótulo. A unidade escrita manda: "113.7 m" é metro, "6000 mm" é milímetro,
+  // "600 cm", "20 ft", "12 pol" também valem. Sem unidade, a prévia avisa o que foi suposto.
+  let m;
+  const UC = UNID_COMP_RE.source, UA = UNID_AREA_RE.source, UM = UNID_MASSA_RE.source;
+  if((m = tirar(new RegExp(`\\b(?:comprimento|compr\\.?|comp\\.?)\\b([^\\d;]*?)[:=\\-–]?\\s*${NUM_RE}\\s*(?:${UC})?`, "iu")))){
+    const unid = unidadeEscrita(m[0], UNID_COMP_RE);
+    // "total" no rótulo: total; "unitário"/"cada": por peça; sem nada, decide lá embaixo
+    achado.comprimentoTotal = /total/i.test(m[1]) ? true : /unit|por pe[çc]a|cada/i.test(m[1]) ? false : null;
+    achado.comprimento = toNumBR(m[2]);
+    achado.unidadeComprimento = unid;               // null = não escrita (resolvida lá embaixo)
+  }
+  if((m = tirar(new RegExp(`\\b(?:[áa]rea)\\b([^\\d;]*?)[:=\\-–]?\\s*${NUM_RE}\\s*(?:${UA})?`, "iu")))){
+    const unid = unidadeEscrita(m[0], UNID_AREA_RE);
+    achado.area = toNumBR(m[2]) * (unid ? FATOR_AREA[unid] : 1);
+    achado.areaTotal = !/unit|por pe[çc]a|cada/i.test(m[1]);
+    if(!unid) achado.suposto.push("área sem unidade: considerei m²");
+  }
+  if((m = tirar(new RegExp(`\\b(?:massa|peso)\\b([^\\d;]*?)[:=\\-–]?\\s*${NUM_RE}\\s*(?:${UM})?`, "iu")))){
+    const unid = unidadeEscrita(m[0], UNID_MASSA_RE);
+    achado.massa = toNumBR(m[2]) * (unid ? FATOR_MASSA[unid] : 1);
+    achado.massaUnit = /unit|por pe[çc]a|cada/i.test(m[1]);
+    if(!unid) achado.suposto.push("massa sem unidade: considerei kg");
+  }
+  if((m = tirar(new RegExp(`\\b(?:qtd|qtde|quant(?:idade)?)\\.?\\s*[:=\\-–]?\\s*${NUM_RE}`, "i")))) achado.qtd = toNumBR(m[1]);
+  if((m = tirar(/\bmaterial\s*[:=\-–]\s*([^;]+)/i))) achado.material = m[1].trim();
+  if((m = tirar(/\bnorma\s*[:=\-–]\s*([^;]+)/i))) achado.norma.push(m[1].trim());
+  // comprimento solto, sem rótulo, mas com unidade de comprimento que não é mm (a medida da
+  // peça é escrita em mm): "- 113,7 m", "113.7 metros", "600 cm", "40 ft" = comprimento total
+  if(achado.comprimento==null && (m = tirar(new RegExp(`(?:^|[\\s\\-–:;])${NUM_RE}\\s*(cm|km|metros?|mts?|m|ft|p[ée]s)(?![²2\\p{L}\\/])`, "iu")))){
+    achado.comprimento = toNumBR(m[1]); achado.unidadeComprimento = normUnidade(m[2]); achado.comprimentoTotal = true;
+  }
+  // "12 kg", "1,2 t" soltos: massa total da linha ("kg/m" é massa linear, fica na medida)
+  if(achado.massa==null && (m = tirar(new RegExp(`${NUM_RE}\\s*(kg|t|ton|toneladas?)(?![\\p{L}\\/]|\\s*\\/)`, "iu")))){
+    achado.massa = toNumBR(m[1]) * FATOR_MASSA[normUnidade(m[2])];
+  }
+  // quantidade no começo: "4 TUBO ...", "4x Chapa ...", "4 pç Arruela ..."
+  if(achado.qtd==null && (m = tirar(/^\s*(\d+)\s*(?:x|un\.?|unid\.?|p[çc]s?\.?|pe[çc]as?)?\s+(?![xX]\s*\d)(?=[A-Za-zÀ-ú])/i))) achado.qtd = Number(m[1]);
+  // ... ou no fim: "... 4 pç", "... 4 un"
+  if(achado.qtd==null && (m = tirar(/(\d+)\s*(?:un\.?|unid\.?|p[çc]s?\.?|pe[çc]as?)\s*;?\s*$/i))) achado.qtd = Number(m[1]);
+
+  // comprimento sem "total" nem "unitário": com quantidade escrita é o de cada peça
+  // ("4 Tubo ... comprimento 6000 mm"); sem quantidade é o total da linha
+  if(achado.comprimento!=null && achado.comprimentoTotal==null) achado.comprimentoTotal = achado.qtd==null;
+  // sem unidade: total de linha é metragem (m); comprimento de peça é o das listas (mm)
+  if(achado.comprimento!=null){
+    let u = achado.unidadeComprimento;
+    if(!u){
+      u = achado.comprimentoTotal ? "m" : "mm";
+      achado.suposto.push(`comprimento sem unidade: considerei ${u}`);
+    }
+    achado.unidadeComprimento = u;
+    achado.comprimento *= FATOR_COMP[u];            // sempre em metros daqui para frente
+  }
+
+  // norma e material pelo formato
+  for(const n of (s.match(NORMA_RE) || [])){ achado.norma.push(n.replace(/\s+(?=\d)/, " ").replace(/B\s+(?=\d)/i, "B")); s = s.replace(n, " ; "); }
+  if(!achado.material){
+    for(const re of MATERIAL_RES){ if((m = tirar(re))){ achado.material = m[0].trim(); break; } }
+  }
+
+  // o que sobrou: o tipo são as primeiras palavras sem número; o resto é a medida
+  const resto = s.split(";").map(p => p.replace(/\s+/g, " ").trim()).filter(p => p && !/^[-–,.]+$/.test(p)).join(" ")
+    .replace(/\s+[-–,]\s*$/, "").replace(/^[-–,]\s*/, "").trim();
+  const palavras = resto.split(" ");
+  const tipoPal = [];
+  for(const [i, p] of palavras.entries()){
+    if(/\d|^[Ø#"]|^x$/i.test(p)) break;
+    if(i > 0 && p.length < 3 && !/^(de|da|do|em)$/i.test(p)) break;
+    tipoPal.push(p);
+  }
+  let tipo = tituloCurto(tipoPal.join(" "));
+  let descricao = palavras.slice(tipoPal.length).join(" ").replace(/^[-–,:]\s*/, "").trim();
+  if(!tipo){ tipo = descricao; }
+  if(!descricao) descricao = tipo;
+  return {...achado, tipo, descricao, norma: achado.norma.join(" · ")};
+}
+// linhas escritas: cada linha é um item, a não ser que comece com um rótulo ("Comprimento
+// total...", "Qtd: 4", "Material: ...") — aí ela completa o item de cima
+const ROTULO_CONTINUA_RE = /^\s*(comprimento|compr\.?|comp\.?|qtd|qtde|quantidade|quant\.?|material|massa|peso|[áa]rea|norma|total)\b/i;
+function blocosDeTextoLivre(text){
+  const blocos = [];
+  for(const linha of String(text||"").split(/\r\n|\r|\n/)){
+    if(!linha.trim()){ blocos.push(null); continue; }
+    const ultimo = blocos[blocos.length-1];
+    if(ultimo && ROTULO_CONTINUA_RE.test(linha)) ultimo.push(linha);
+    else blocos.push([linha]);
+  }
+  return blocos.filter(Boolean).map(b => b.join("\n"));
+}
+const COLUNAS_TEXTO_LIVRE = [
+  {campo:"item",titulo:"Item"},{campo:"qtd",titulo:"Qtd."},{campo:"titulo",titulo:"Título"},
+  {campo:"especificacao",titulo:"Especificação"},{campo:"norma",titulo:"Norma"},
+  {campo:"comprimento",titulo:"Comprimento total (m)"},{campo:"area",titulo:"Área total (m²)"},
+  {campo:"material",titulo:"Material"},{campo:"massa",titulo:"Massa (kg)"}];
+function lerTextoLivre(text, fonte){
+  const rows = [], problems = [], lidos = [];
+  blocosDeTextoLivre(text).forEach((bloco, i) => {
+    const it = interpretarItemEscrito(bloco);
+    if(isJunkRow(it.tipo) && isJunkRow(it.descricao)) return;
+    const qtd = it.qtd!=null && it.qtd>0 ? it.qtd : 1;
+    if(it.qtd==null && it.comprimento==null && it.area==null)
+      problems.push(`Item ${i+1} ("${it.tipo}"): quantidade não escrita — entrou como 1, confira.`);
+    const massa = it.massa!=null ? it.massa * (it.massaUnit ? qtd : 1) : 0;
+    const medidas = {massaUnit:false};
+    // comprimento e área escritos como total da linha: guardados por peça, como os das
+    // planilhas, e marcados como corrida contínua (vira barras inteiras + a sobra no corte)
+    if(it.comprimento > 0){
+      medidas.comprimento = it.comprimentoTotal ? it.comprimento/qtd : it.comprimento;
+      medidas.comprimentoModo = "total";
+      medidas.continuo = it.comprimentoTotal;
+    }
+    if(it.area > 0){ medidas.area = it.areaTotal ? it.area/qtd : it.area; medidas.areaModo = "total"; }
+    let descricao = it.descricao;
+    if(it.norma && !tipoCortavel(it.tipo) && descricao !== it.tipo) descricao = `${descricao} · ${it.norma}`;
+    rows.push(buildRow("", qtd, it.tipo, descricao, it.material, massa, i+1, fonte, {
+      secao:false, massaAusente: it.massa==null, extras:{}, medidas,
+      complemento: normalizeText(it.norma),
+      campos: COLUNAS_TEXTO_LIVRE.map(c => c.campo),
+      bruto: {item:"", titulo: normalizeText(it.tipo), especificacao: normalizeText(it.descricao),
+              norma: normalizeText(it.norma), material: normalizeText(it.material)}
+    }));
+    lidos.push(it);
+  });
+  // só as colunas que algum item escrito preencheu (Norma, Comprimento, Área são opcionais)
+  const usadas = COLUNAS_TEXTO_LIVRE.filter(c =>
+    c.campo==="norma" ? lidos.some(it => it.norma) :
+    c.campo==="comprimento" ? lidos.some(it => it.comprimento!=null) :
+    c.campo==="area" ? lidos.some(it => it.area!=null) : true);
+  const cabecalho = {titulos: usadas.map(c => c.titulo),
+                     mapa: Object.fromEntries(usadas.map((c, i) => [c.campo, i])), achado:true};
+  registrarColunas(cabecalho, fonte);
+  return {rows, problems, cabecalho, lidos, textoLivre:true};
+}
+/* ---------------- ajuda para escrever: exemplo com as palavras-chave + prévia ao vivo ---------------- */
+// Cada campo tem uma cor; o mesmo código de cor pinta o exemplo, a tabela de resultado, a
+// lista de palavras-chave e a prévia do que a pessoa está digitando — dá para ver na hora
+// qual pedaço do texto foi parar em qual coluna.
+const CAMPOS_ESCRITA = [
+  {k:"qtd",   rotulo:"Qtd",           como:"número no começo, ou com rótulo", ex:["4 TUBO…","4x","4 pç","Qtd: 4"]},
+  {k:"tit",   rotulo:"Título",        como:"as primeiras palavras, antes do primeiro número ou Ø/#", ex:["TUBO","Chapa","Tubo Retangular","Cantoneira"]},
+  {k:"esp",   rotulo:"Especificação", como:"a medida: tudo o que sobra", ex:["Ø1.1/2'' SCH. 40","#1/4\" (6,35 mm) x 630 x 455 mm","L 2\" x 2\" x 1/4\""]},
+  {k:"norma", rotulo:"Norma",         como:"sigla de norma + número, ou com rótulo", ex:["ASME B 36.10","ANSI B16.5","DIN 934","ISO 4017","NBR 5590","Norma: …"]},
+  {k:"mat",   rotulo:"Material",      como:"especificação de material, ou com rótulo", ex:["ASTM A106 Gr.B","AISI 316","A36","A572 Gr.50","aço carbono","inox","Material: …"]},
+  {k:"med",   rotulo:"Comprimento / Área / Massa", como:"com rótulo; \"total\" = da linha toda, \"unitário\" = por peça", ex:["Comprimento total 113,7 m","- 113,7 m","Comprimento 6000 mm","Área total 3,2 m²","Massa 12 kg","Massa unitária 1,1 kg"]},
+  {k:"un",    rotulo:"Unidade", como:"a unidade escrita manda — 113.7 m é metro, 113,7 mm é milímetro. Sem unidade: comprimento total em m, por peça em mm, área em m², massa em kg (a prévia avisa)",
+              ex:["mm","cm","m / metros","km","pol / \"","ft","mm² · cm² · m²","g · kg · t"]},
+];
+const EXEMPLOS_ESCRITA = {
+  // uma linha só (campo da seção 2)
+  quick: [[["qtd","4"],["tit","TUBO"],["esp","Ø1.1/2'' SCH. 40"],["norma","ASME B 36.10"],["mat","ASTM A106 Gr.B"],["med","- Comprimento total 113,7 m"]],
+          [["qtd","2"],["tit","Chapa"],["esp","#1/4\" (6,35 mm) x 630 x 455 mm"],["mat","AISI 316"],["med","massa unitária 7,2 kg"]]],
+  // várias linhas (campo de colar/escrever da seção 1): a linha com rótulo completa a de cima
+  paste: [[["tit","TUBO"],["esp","Ø1.1/2'' SCH. 40"],["norma","ASME B 36.10"],["quebra",""],["med","Comprimento Total dos Tubos - 113,7 m"]],
+          [["qtd","2"],["tit","Chapa"],["esp","#1/4\" (6,35 mm) x 630 x 455 mm"],["mat","AISI 316"],["med","massa unitária 7,2 kg"]]],
+};
+function textoDoExemplo(ex){ return ex.map(([k, t]) => k==="quebra" ? "\n" : t).join(" ").replace(/ ?\n ?/g, "\n"); }
+function chipsDoItem(it){
+  const c = (k, rot, v) => `<span class="wkey wkey--${k}"><small>${rot}</small>${escapeHtml(v)}</span>`;
+  const out = [];
+  out.push(c("qtd", "Qtd", it.qtd!=null ? fmtQtd(it.qtd) : "1 (não escrita)"));
+  out.push(c("tit", "Título", it.tipo || "—"));
+  out.push(c("esp", "Especificação", normalizeText(it.descricao) || "—"));
+  if(it.norma) out.push(c("norma", "Norma", it.norma));
+  out.push(c("mat", "Material", it.material || "— (não escrito)"));
+  if(it.comprimento!=null){
+    // mostra na unidade que foi escrita e, se não for metro, quanto dá em metros
+    const u = it.unidadeComprimento || "m";
+    const noEscrito = it.comprimento / (FATOR_COMP[u] || 1);
+    // sem separador de milhar: "6000 mm", não "6.000 mm" (que se confunde com 6 vírgula 0)
+    const n = (v, max) => Number(v).toLocaleString("pt-BR", {useGrouping:false, maximumFractionDigits:max});
+    const txt = u==="m" ? `${n(it.comprimento, 3)} m` : `${n(noEscrito, 2)} ${u} = ${n(it.comprimento, 3)} m`;
+    out.push(c("med", it.comprimentoTotal ? "Comprimento total" : "Comprimento por peça", txt));
+  }
+  if(it.area!=null) out.push(c("med", it.areaTotal ? "Área total" : "Área por peça", fmt(it.area, 3) + " m²"));
+  if(it.massa!=null) out.push(c("med", it.massaUnit ? "Massa por peça" : "Massa total", fmt(it.massa, 2) + " kg"));
+  // unidade que não foi escrita: diz o que foi suposto, para a pessoa corrigir se não for isso
+  for(const s of (it.suposto || [])) out.push(`<span class="wkey wkey--aviso"><small>atenção</small>${escapeHtml(s)}</span>`);
+  return out.join("");
+}
+// "como vai ficar": o que foi separado de cada item escrito, antes de adicionar
+function htmlPreviaEscrita(texto){
+  const blocos = blocosDeTextoLivre(texto);
+  if(!blocos.length) return "";
+  return `<div class="wprev__titulo">Como vai entrar na lista${blocos.length>1 ? ` (${blocos.length} itens)` : ""}:</div>`
+    + blocos.map(b => `<div class="wprev__item">${chipsDoItem(interpretarItemEscrito(b))}</div>`).join("");
+}
+function htmlAjudaEscrita(tipo){
+  const exemplos = EXEMPLOS_ESCRITA[tipo] || EXEMPLOS_ESCRITA.quick;
+  const exHtml = exemplos.map((ex, i) => {
+    const linha = ex.map(([k, t]) => k==="quebra" ? "<br>" : `<mark class="wkey wkey--${k}" title="${escapeHtml(CAMPOS_ESCRITA.find(c=>c.k===k).rotulo)}">${escapeHtml(t)}</mark>`).join(" ");
+    const it = interpretarItemEscrito(textoDoExemplo(ex));
+    return `<div class="whelp__ex">
+        <div class="whelp__linha">${linha}</div>
+        <div class="whelp__seta">↳ vira:</div>
+        <div class="wprev__item">${chipsDoItem(it)}</div>
+        <button type="button" class="btn-link" data-usar-exemplo="${i}">usar este exemplo</button>
+      </div>`;
+  }).join("");
+  const chaves = CAMPOS_ESCRITA.map(c => `<tr>
+      <td><span class="wkey wkey--${c.k}">${escapeHtml(c.rotulo)}</span></td>
+      <td>${escapeHtml(c.como)}</td>
+      <td>${c.ex.map(e => `<code>${escapeHtml(e)}</code>`).join(" ")}</td></tr>`).join("");
+  const dica = tipo==="paste"
+    ? `Um item por linha. Linha que começa com <code>Comprimento</code>, <code>Qtd</code>, <code>Material</code>, <code>Massa</code>, <code>Área</code> ou <code>Norma</code> completa o item de cima. Com tabulação (colado do Excel) o campo é lido como tabela.`
+    : `Tudo numa linha só, na ordem que quiser — Enter adiciona. Item igual a um que já está na lista soma nele.`;
+  return `<details class="whelp">
+      <summary>Como escrever — exemplo e palavras-chave</summary>
+      <p class="help">${dica}</p>
+      ${exHtml}
+      <div class="table-wrap"><table class="data-table whelp__chaves">
+        <thead><tr><th>Vai para</th><th>Como é reconhecido</th><th>Exemplos</th></tr></thead>
+        <tbody>${chaves}</tbody></table></div>
+    </details>`;
+}
+// liga a ajuda e a prévia a um campo de texto (input da seção 2 ou textarea da seção 1)
+function ligarAjudaDeEscrita(campo, ajudaEl, previaEl, tipo){
+  if(!campo || !ajudaEl) return;
+  ajudaEl.innerHTML = htmlAjudaEscrita(tipo);
+  const atualizar = () => {
+    if(!previaEl) return;
+    const t = campo.value;
+    // tabela colada do Excel não é item escrito: sem prévia
+    previaEl.innerHTML = (t.trim() && !t.includes("\t")) ? htmlPreviaEscrita(t) : "";
+  };
+  campo.addEventListener("input", atualizar);
+  ajudaEl.addEventListener("click", ev => {
+    const b = ev.target.closest("[data-usar-exemplo]");
+    if(!b) return;
+    campo.value = textoDoExemplo((EXEMPLOS_ESCRITA[tipo] || EXEMPLOS_ESCRITA.quick)[Number(b.dataset.usarExemplo)]);
+    atualizar();
+    campo.focus();
+  });
+  campo._atualizarPrevia = atualizar;
+}
+
 function acharCabecalho(tabela, limite=8){
   for(let i=0;i<Math.min(tabela.length, limite);i++){
     const r = lerCabecalho(tabela[i]);
@@ -351,6 +745,8 @@ function buildRow(item, qtd, especificacao, descricao, material, massa, linha, f
 // numeradas 8.1, 8.2… Ela não é uma peça a comprar, mas organiza a lista e por isso é
 // guardada como seção (aparece na exportação em ordem original, nunca na de compra).
 function ehLinhaDeConjunto(item, descricao, material){
+  // "Plataforma | Conjunto Soldado | 450,9 kg": a massa é a soma das peças de baixo
+  if(/^(conjunto(\s+soldado|\s+montado)?|montagem|sub-?conjunto|assembly|weldment|soldagem)$/i.test(String(descricao||"").trim())) return true;
   const semDetalhe = semValor(descricao);
   const itemTxt = String(item==null?"":item).trim();
   const paiNumerado = /^\d+$/.test(itemTxt);
@@ -359,6 +755,8 @@ function ehLinhaDeConjunto(item, descricao, material){
 
 function parseRows(text, fonte){
   const linhas = text.split(/\r\n|\r|\n/).filter(l=>l.trim().length>0);
+  // sem nenhuma tabulação não é tabela copiada do Excel: é item escrito à mão
+  if(linhas.length && !linhas.some(l => l.includes("\t"))) return lerTextoLivre(text, fonte);
   const tabela = linhas.map(l => l.split("\t").map(c=>c.trim()));
   return lerTabela(tabela, fonte, "colagem");
 }
@@ -372,24 +770,75 @@ function lerTabela(tabela, fonte, origemTipo){
   const parsed = [];
   const problems = [];
   const inicio = cab.linha + 1;
+  const titulosCab = cab.titulos || [];
+  const dados = tabela.slice(inicio);
+  // separador decimal e modo (por peça / total) de cada coluna numérica
+  const dec = {}, modo = {}, escala = {};
+  for(const campo of ["qtd","massa","area","comprimento"]){
+    if(mapa[campo] === undefined) continue;
+    dec[campo] = decimalDaColuna(dados.map(l => (l||[])[mapa[campo]]));
+    modo[campo] = modoDaColuna(titulosCab[mapa[campo]], campo);
+    escala[campo] = escalaDaColuna(titulosCab[mapa[campo]], campo);
+  }
+  const papeis = resolverPapeis(tabela, inicio, mapa);
+  const texto = (linha, campo) => { const v = celula(linha, mapa, campo); return v==null ? "" : String(v).trim(); };
   for(let i=inicio;i<tabela.length;i++){
     const linha = tabela[i];
     if(!linha || !linha.some(c => String(c==null?"":c).trim())) continue;
     const item = celula(linha, mapa, "item");
     const bruto = {
-      titulo: celula(linha, mapa, "titulo"),
-      especificacao: celula(linha, mapa, "especificacao"),
-      descricao: celula(linha, mapa, "descricao")
+      titulo: texto(linha, "titulo"),
+      especificacao: texto(linha, "especificacao"),
+      descricao: texto(linha, "descricao")
     };
-    const {tipo, detalhe} = papeisDaLinha(bruto);
+    let tipo, detalhe, complemento = "";
+    if(papeis){
+      tipo = papeis.tipo ? bruto[papeis.tipo] : "";
+      detalhe = texto(linha, "dimensoes");
+      if(!tipo) tipo = detalhe;
+      if(!detalhe) detalhe = tipo;
+      complemento = papeis.complemento.map(c => bruto[c]).filter(v => !semValor(v)).join(" · ");
+    } else {
+      ({tipo, detalhe} = papeisDaLinha(bruto));
+    }
+    for(const c of ["norma","acabamento"]){
+      const v = texto(linha, c);
+      if(!semValor(v)) complemento = [complemento, v].filter(Boolean).join(" · ");
+    }
+    if(/chapa/i.test(tipo)) detalhe = completarChapaPeloCodigo(detalhe, texto(linha, "codigo"));
+    // parafuso, arruela, porca: a norma e o tratamento fazem parte do que se compra, então
+    // aparecem junto da medida ("M6 x 20 · ISO 7380"). Em chapa/perfil ficam só na chave de
+    // agrupamento — no texto da medida atrapalhariam a leitura de espessura e comprimento.
+    if(complemento && !tipoCortavel(tipo) && detalhe !== tipo) detalhe = `${detalhe} · ${complemento}`;
     const especificacao = tipo, descricao = detalhe;
     const material = celula(linha, mapa, "material");
     // descarta só o que é mesmo lixo: linha sem nenhum texto útil ou marcada como esboço
     if(isJunkRow(especificacao) && isJunkRow(descricao)) continue;
-    const {qtd, suposta} = qtdDaCelula(celula(linha, mapa, "qtd"));
+    const {qtd, suposta} = qtdDaCelula(celula(linha, mapa, "qtd"), dec.qtd);
     const celulaMassa = celula(linha, mapa, "massa");
-    const massa = massaDaCelula(celulaMassa);
+    // internamente a massa é sempre o total da linha; a lista que traz massa por peça
+    // ("Massa unitária", "Mass" do SolidWorks) é multiplicada pela quantidade aqui e volta a
+    // sair por peça na exportação no padrão do documento
+    const massaUnit = modo.massa === "unit";
+    // "500 g" / "1,2 t" na célula: convertido para kg
+    const uMassa = typeof celulaMassa === "string" ? unidadeEscrita(celulaMassa, UNID_MASSA_RE) : null;
+    const massa = massaDaCelula(celulaMassa, dec.massa) * (uMassa ? FATOR_MASSA[uMassa] || 1 : escala.massa || 1) * (massaUnit ? qtd : 1);
     const massaAusente = semValor(celulaMassa);      // veio "-" ou vazio: sai "-" na exportação
+    // área e comprimento já calculados pelo desenho, guardados sempre por peça (m² e m)
+    const medidas = {massaUnit};
+    for(const campo of ["area","comprimento"]){
+      if(mapa[campo] === undefined) continue;
+      medidas[campo+"Modo"] = modo[campo];
+      const v = celula(linha, mapa, campo);
+      if(semValor(v)) continue;
+      let n = lerNumero(v, dec[campo]);
+      if(!isFinite(n) || n <= 0) continue;
+      // "1855 mm" escrito na célula vale mais que o título da coluna
+      const u = typeof v === "string" ? unidadeEscrita(v, campo==="area" ? UNID_AREA_RE : UNID_COMP_RE) : null;
+      n *= u ? (campo==="area" ? FATOR_AREA[u] : FATOR_COMP[u]) || 1 : escala[campo];
+      if(modo[campo] === "total" && qtd > 0) n /= qtd;
+      medidas[campo] = n;
+    }
     // colunas que ESTA lista tinha (as que faltarem saem como "-" na lista final) e as
     // colunas fora do padrão, que viajam junto com a linha
     const camposPresentes = Object.keys(mapa);
@@ -406,11 +855,13 @@ function lerTabela(tabela, fonte, origemTipo){
       campos: camposPresentes,
       massaAusente,
       extras,
-      bruto: {
-        titulo: normalizeText(bruto.titulo),
-        especificacao: normalizeText(bruto.especificacao),
-        descricao: normalizeText(bruto.descricao)
-      }
+      medidas,
+      complemento: normalizeText(complemento),
+      // o texto original de cada coluna de texto reconhecida, para a exportação no padrão
+      // do documento devolver todos os campos como vieram
+      bruto: Object.fromEntries(Object.keys(mapa)
+        .filter(c => !["qtd","massa","area","comprimento"].includes(c))
+        .map(c => [c, normalizeText(texto(linha, c))]))
     }));
   }
   const cabecalho = {titulos:cab.titulos, mapa, achado:cab.achados>0};
@@ -425,7 +876,7 @@ function lerTabela(tabela, fonte, origemTipo){
 function groupRows(rows){
   const map = new Map();
   for(const r of rows){
-    const key = [r.especificacao, r.descricao, r.material].join("||");
+    const key = [r.especificacao, r.descricao, r.material, r.complemento||""].join("||");
     if(!map.has(key)) map.set(key, {especificacao:r.especificacao, descricao:r.descricao, material:r.material, qtd:0, massa:0, extraPct:0, origem:[], ordem:r.ordem, secao:!!r.secao});
     const g = map.get(key);
     // a posição do grupo é a da primeira linha que caiu nele — assim a consolidação sai na
@@ -448,6 +899,8 @@ function groupRows(rows){
       extras: r.extras,
       bruto: r.bruto,
       massaAusente: r.massaAusente,
+      medidas: r.medidas,
+      complemento: r.complemento,
       especificacao: r.especificacao,
       descricao: r.descricao,
       material: r.material,
@@ -517,6 +970,8 @@ function expandToSourceRows(groups){
         extras: m.extras,
         bruto: m.bruto,
         massaAusente: m.massaAusente,
+        medidas: m.medidas,
+        complemento: m.complemento,
         // o extra é do grupo, não da linha; cada linha leva uma cópia só pra sobreviver ao
         // reagrupamento (inclusive quando a linha migra sozinha pra outro grupo)
         extraPct: extraPctOf(g),
@@ -566,15 +1021,38 @@ function parseDescricao(descricao){
 // tudo antes dele é a "identidade" da seção transversal (usada para agrupar o que pode ser
 // cortado de uma mesma barra comercial). Funciona para "W460 x 74,0 x 3975mm",
 // "Ø114,30 SCH.40 x 329,84 mm", "Cantoneira ... 50,80 x 9,53 x 238,96 mm" etc.
+// Número que é parte da SEÇÃO e não pode ser tomado por comprimento: medida em polegada
+// ("C4\"", "2.1/2\""), massa linear ("9,3 kg/m") e schedule ("SCH.40").
 function parseBarraDescricao(descricao){
   const re = /([\d]+(?:[.,]\d+)?)\s*(?:mm)?/gi;
   let m, last = null;
-  while((m = re.exec(descricao))) last = m;
-  if(!last) return {length:null, identidade:descricao.trim()};
+  while((m = re.exec(descricao))){
+    const antes = descricao.slice(0, m.index), depois = descricao.slice(m.index + m[1].length);
+    if(/^\s*("|''|\/|kg)/i.test(depois) || /\/\s*$/.test(antes) || /SCH\.?\s*$/i.test(antes)) continue;
+    last = m;
+  }
+  const kg = descricao.match(/(\d+(?:[.,]\d+)?)\s*kg\s*\/\s*m\b/i);
+  const kgPorM = kg ? toNumFlex(kg[1]) : null;
+  if(!last) return {length:null, identidade:descricao.trim(), kgPorM};
+  // "240 x 120 x 6.35 mm" (tubo retangular): o último número é a parede, não o comprimento —
+  // é o menor de todos. A seção fica guardada para calcular a massa linear.
+  const nums = (descricao.match(/\d+(?:[.,]\d+)?/g) || []).map(toNumFlex);
+  if(!/Ø/.test(descricao) && nums.length === 3 && nums[2] <= 25 && nums[2] < nums[0] && nums[2] < nums[1]){
+    return {length:null, identidade:descricao.trim().replace(/\s*mm\s*$/i, ""), kgPorM,
+            secaoRet:{a:nums[0], b:nums[1], t:nums[2]}};
+  }
   const length = toNumFlex(last[1]);
   let prefix = descricao.slice(0, last.index);
-  prefix = prefix.replace(/x\s*$/i, "").trim();
-  return {length, identidade: prefix || descricao.trim()};
+  prefix = prefix.replace(/[\s,;x×-]+$/i, "").trim();
+  return {length, identidade: prefix || descricao.trim(), kgPorM};
+}
+// massa específica pelo nome do material (kg/m³) — só para estimar a área de chapa pela massa
+function densidadeDoMaterial(material){
+  const s = String(material||"").toLowerCase();
+  if(/alum/.test(s)) return 2700;
+  if(/inox|aisi\s*3|stainless/.test(s)) return 7950;
+  if(/cobre|copper|lat[aã]o|brass/.test(s)) return 8700;
+  return 7850;
 }
 
 // itens cuja Especificação contenha uma destas palavras são tratados como barra/perfil cortável;
@@ -603,26 +1081,73 @@ function extractFractionLabel(descricao){
   return m ? `${m[1]}/${m[2]}"` : null;
 }
 
+// Área de UMA chapa. Vale, em ordem: a coluna de área do documento, quando confere com a
+// massa; a área pela massa (m / (ρ·e)); a medida da descrição. Por que conferir: a "Área
+// unitária" de uma lista de material é a da face da peça (0,089 m² para uma chapa recortada
+// dentro de 500 × 500), mas a "Area" do SolidWorks é a superfície inteira — as duas faces e
+// as bordas, mais que o dobro. A massa diz qual das duas veio.
+function areaDaChapa(areaCol, massaUnit, espessuraMm, material){
+  const pelaMassa = (massaUnit > 0 && espessuraMm > 0)
+    ? massaUnit / (densidadeDoMaterial(material) * espessuraMm/1000) : null;
+  if(areaCol > 0 && pelaMassa){
+    const r = areaCol / pelaMassa;
+    if(r > 0.75 && r < 1.35) return {area:areaCol, fonte:"documento"};
+    if(r >= 1.6) return {area:pelaMassa, fonte:"massa"};      // superfície total, não a face
+    return {area:areaCol, fonte:"documento"};
+  }
+  if(areaCol > 0) return {area:areaCol, fonte:"documento"};
+  if(pelaMassa) return {area:pelaMassa, fonte:"massa"};
+  return null;
+}
+
 function classifyGroup(g){
   const specLower = g.especificacao.toLowerCase();
+  const md = medidasDoGrupo(g) || {};
+  const qtd = Number(g.qtd)||0;
+  const massaUnit = qtd > 0 ? (Number(g.massa)||0)/qtd : 0;
 
   if(specLower.includes("chapa")){
     const parsed = parseDescricao(g.descricao);
     const fracMm = extractFractionMm(g.descricao);
     const fracLabel = extractFractionLabel(g.descricao);
     const thickness = fracMm!=null ? fracMm : parsed.thickness;
-    let width=null, height=null, circular=false, diamChapa=null;
+    let width=null, height=null, circular=false, diamChapa=null, estimada=null;
     if(parsed.extras.length>=2){ width=parsed.extras[0]; height=parsed.extras[1]; }
     else if(parsed.diametro!=null){ circular=true; diamChapa=parsed.diametro; }
+    const areaCol = md.areaCompleto ? md.area : null;
+    const real = thickness!=null ? areaDaChapa(areaCol, massaUnit, thickness, g.material) : null;
+    // chapa sem as duas medidas (só a espessura veio): o encaixe usa um quadrado com a área
+    // da peça — serve para estimar quantas chapas comprar, e a tela avisa que foi estimado
+    if(thickness!=null && !circular && !(width && height) && real){
+      width = height = Math.round(Math.sqrt(real.area)*1000);
+      estimada = real.fonte;
+    }
     const ok = Boolean(thickness!=null && ((!circular && width && height) || (circular && diamChapa)));
-    return {tipo:"chapa", thickness, width, height, circular, diametro:diamChapa, ok, fracLabel};
+    // área real da peça (m²), quando o documento a traz ou quando foi deduzida pela massa
+    const areaRealM2 = real && (estimada || real.fonte==="documento") ? real.area : null;
+    return {tipo:"chapa", thickness, width, height, circular, diametro:diamChapa, ok, fracLabel, estimada, areaRealM2};
   }
 
   const isBarra = BARRA_KEYWORDS.some(k=>specLower.includes(k));
   if(isBarra){
-    const {length, identidade} = parseBarraDescricao(g.descricao);
+    let {length, identidade, kgPorM, secaoRet} = parseBarraDescricao(g.descricao);
+    let estimada = null;
+    // tubo retangular sem kg/m escrito: massa linear pela seção (2·t·(a+b) − 4·t²)
+    if(!kgPorM && secaoRet){
+      const {a, b, t} = secaoRet;
+      kgPorM = (2*t*(a+b) - 4*t*t) * densidadeDoMaterial(g.material) / 1e6;
+    }
+    // comprimento que o documento já traz calculado vale mais que o lido na descrição
+    if(md.comprimentoCompleto && md.comprimento > 0){ length = md.comprimento*1000; estimada = null; }
+    // perfil descrito só pela seção ("C4\" x 9,3 kg/m"): comprimento = massa ÷ massa linear
+    else if(length==null && kgPorM > 0 && massaUnit > 0){
+      length = Math.round(massaUnit / kgPorM * 1000);
+      estimada = "massa";
+    }
     const ok = length!=null;
-    return {tipo:"barra", length, identidade, ok};
+    // "Comprimento total dos tubos - 113,7 m": não é uma peça, é a metragem a comprar — no
+    // corte vira barras inteiras + a sobra
+    return {tipo:"barra", length, identidade, ok, estimada, continuo: !!md.continuo};
   }
 
   return {tipo:"outro"};
@@ -738,7 +1263,12 @@ function parseWorksheetTable(xmlBytes, sharedStrings){
       let value = null;
       if(type === "s" && vNode) value = sharedStrings[parseInt(vNode.textContent,10)] ?? "";
       else if(type === "inlineStr" && isNode) value = isNode.textContent;
-      else if(vNode) value = vNode.textContent;
+      else if(vNode){
+        value = vNode.textContent;
+        // célula numérica: o .xlsx guarda sempre com ponto ("0.495"), então vira número aqui
+        // e ninguém mais adiante confunde o ponto com separador de milhar
+        if((!type || type === "n") && value.trim() !== "" && isFinite(Number(value))) value = Number(value);
+      }
       rowData[colIdx] = value;
     }
     if(!isNaN(rIdx)) table[rIdx-1] = rowData;
@@ -1933,7 +2463,33 @@ function reprocessGrouped(){
 }
 els.reprocessBtn.addEventListener("click", reprocessGrouped);
 
+// item escrito numa linha só: separado em colunas e somado à lista (se já existir um item
+// igual, ele soma nele)
+function adicionarItemEscrito(){
+  const input = document.getElementById("quickItemInput");
+  const status = document.getElementById("quickItemStatus");
+  const texto = input ? input.value.trim() : "";
+  if(!texto) return false;
+  const lido = lerTextoLivre(texto, FONTE_MANUAL);
+  if(!lido.rows.length){ status.textContent = "Não achei nada para adicionar nesse texto."; return true; }
+  lido.rows.forEach(r => { r.linha = undefined; });
+  runPipeline(lido.rows, lido.problems, "item escrito", true);
+  status.innerHTML = "✓ Adicionado:" + lido.lidos.map(it => `<div class="wprev__item">${chipsDoItem(it)}</div>`).join("")
+    + (lido.problems.length ? `<br><span class="pill-tag warn">${escapeHtml(lido.problems.join(" "))}</span>` : "");
+  input.value = "";
+  if(input._atualizarPrevia) input._atualizarPrevia();
+  input.focus();
+  return true;
+}
+const quickItemInput = document.getElementById("quickItemInput");
+if(quickItemInput) quickItemInput.addEventListener("keydown", ev => {
+  if(ev.key === "Enter"){ ev.preventDefault(); adicionarItemEscrito(); }
+});
+// exemplo com as palavras-chave + prévia do que está sendo escrito, nos dois campos
+ligarAjudaDeEscrita(quickItemInput, document.getElementById("quickItemHelp"), document.getElementById("quickItemPreview"), "quick");
+ligarAjudaDeEscrita(els.pasteArea, document.getElementById("pasteHelp"), document.getElementById("pastePreview"), "paste");
 els.addGroupedRowBtn.addEventListener("click", ()=>{
+  if(adicionarItemEscrito()) return;
   lastGrouped.push({especificacao:"", descricao:"", material:"", qtd:0, massa:0, extraPct:0, origem:[]});
   renderGroupedTable(lastGrouped);
   els.groupedSection.hidden = false;
@@ -2000,9 +2556,18 @@ function processarColagem(append){
     els.parseStatus.className = "status-msg err";
     return;
   }
-  const fonte = append ? uniqueSourceLabel("Texto colado") : "Texto colado";
-  const {rows, problems} = parseRows(text, fonte);
-  runPipeline(rows, problems, append ? `"${fonte}"` : "texto colado", append);
+  const escrito = !text.includes("\t");
+  const base = escrito ? "Itens escritos" : "Texto colado";
+  const fonte = append ? uniqueSourceLabel(base) : base;
+  const lido = parseRows(text, fonte);
+  runPipeline(lido.rows, lido.problems, append ? `"${fonte}"` : base.toLowerCase(), append);
+  // itens escritos à mão: mostra como cada um foi separado, para conferir na hora
+  if(lido.textoLivre && lido.rows.length){
+    els.parseStatus.innerHTML = escapeHtml(els.parseStatus.textContent) + "<br>"
+      + lido.lidos.map(it => `<div class="wprev__item">${chipsDoItem(it)}</div>`).join("");
+    const previa = document.getElementById("pastePreview");
+    if(previa) previa.innerHTML = "";
+  }
 }
 els.processBtn.addEventListener("click", ()=> processarColagem(false));
 els.addPasteBtn.addEventListener("click", ()=> processarColagem(true));
@@ -2261,6 +2826,9 @@ function contentRowsComprimentoPerfis(){
 // melhor do que mostrar um número inventado.
 function areaM2DaLinha(g, c){
   if(!c || c.tipo !== "chapa" || !c.ok) return null;
+  // área da peça que o documento já trouxe (ou deduzida pela massa) vale mais que o retângulo
+  // da descrição, que é só o tamanho de onde a peça recortada sai
+  if(c.areaRealM2 > 0) return c.areaRealM2 * (Number(g.qtd)||0);
   const umaMm2 = c.circular ? Math.PI*Math.pow(c.diametro/2, 2) : c.width*c.height;
   if(!isFinite(umaMm2)) return null;
   return (umaMm2 * (Number(g.qtd)||0)) / 1e6;
@@ -2308,21 +2876,34 @@ function valorDoCampo(reg, campo){
   }
   const temCampo = !reg.campos || reg.campos.includes(campo);
   if(!temCampo) return null;                       // a lista de origem não tinha essa coluna
+  const b = reg.bruto || {};
   // Título / Especificação / Descrição saem como vieram no documento
   if(campo==="titulo" || campo==="especificacao" || campo==="descricao"){
-    const b = reg.bruto || {};
     const v0 = b[campo];
     if(v0!==undefined && String(v0).trim()!=="") return v0;
+    if(v0!==undefined && reg.campos) return null;  // a coluna existia e veio vazia: sai "-"
     // item corrigido à mão na tela (sem bruto): usa o papel equivalente
     if(campo==="descricao" || (campo==="especificacao" && !(reg.campos||[]).includes("descricao"))) return reg.descricao || null;
     return reg.especificacao || null;
   }
+  const md = reg.medidas || {};
+  const qtd = Number(reg.qtd)||0;
   const v = reg[campo];
   if(campo==="massa"){
     if(reg.massaAusente && !(Number(v)>0)) return null;   // não veio preenchida: sai "-"
+    // lista com massa por peça: volta por peça, como estava no documento
+    if(md.massaUnit) return qtd > 0 ? Math.round((Number(v)||0)/qtd*1e6)/1e6 : null;
     return Math.round((Number(v)||0)*100)/100;
   }
+  if(campo==="area" || campo==="comprimento"){
+    const u = md[campo];
+    if(u==null || !isFinite(u)) return null;
+    // valor do próprio documento: volta como veio, sem arredondar para 2 casas
+    return Math.round((md[campo+"Modo"]==="total" ? u*qtd : u)*1e6)/1e6;
+  }
   if(campo==="qtd") return Number(v)||0;
+  // demais colunas reconhecidas (Dimensões, Código, Acabamento…): texto como veio
+  if(b[campo]!==undefined) return String(b[campo]).trim()==="" ? null : b[campo];
   return (v===undefined || v===null || String(v).trim()==="") ? null : v;
 }
 // uma aba por lista de origem, cada uma com as SUAS colunas e na ordem em que as linhas
@@ -2386,7 +2967,7 @@ function registrosOriginais(){
         item: o.item || "", qtd: o.qtd, massa: o.massa,
         especificacao: o.especificacao, descricao: o.descricao, material: o.material,
         ordem: o.ordem, fonte: o.fonte, campos: o.campos, extras: o.extras, bruto: o.bruto,
-        massaAusente: o.massaAusente
+        massaAusente: o.massaAusente, medidas: o.medidas
       });
     }
     if(!g.origem || !g.origem.length){
@@ -2400,17 +2981,50 @@ function registrosOriginais(){
   return ordenarLista(linhas);
 }
 
+function juntarCampos(lista){
+  const out = {};
+  for(const obj of lista){
+    for(const [k, v] of Object.entries(obj || {})){
+      const t = v==null ? "" : String(v).trim();
+      if(!(k in out)) out[k] = [];
+      if(t && !out[k].includes(t)) out[k].push(t);
+    }
+  }
+  for(const k of Object.keys(out)) out[k] = out[k].join("; ");
+  return out;
+}
+// medidas por peça do item agrupado: média das linhas ponderada pela quantidade (as linhas
+// de um grupo são a mesma peça, então na prática é o próprio valor de cada uma)
+function medidasDoGrupo(g){
+  const origem = (g && g.origem) || [];
+  if(!origem.length) return null;
+  const out = {massaUnit: origem.some(o => o.medidas && o.medidas.massaUnit),
+               continuo: origem.some(o => o.medidas && o.medidas.continuo)};
+  for(const campo of ["area","comprimento"]){
+    const com = origem.filter(o => o.medidas && o.medidas[campo]!=null && isFinite(o.medidas[campo]));
+    if(!com.length) continue;
+    const q = com.reduce((s,o)=> s + (Number(o.qtd)||0), 0);
+    out[campo] = q > 0 ? com.reduce((s,o)=> s + o.medidas[campo]*(Number(o.qtd)||0), 0)/q : com[0].medidas[campo];
+    out[campo+"Modo"] = com[0].medidas[campo+"Modo"];
+    // só vale para o grupo inteiro se todas as linhas trouxeram o valor
+    out[campo+"Completo"] = com.length === origem.length;
+  }
+  return out;
+}
+
 // registros da lista (itens agrupados + linhas de conjunto), já com origem, na ordem do documento
 function registrosDaLista(){
   const itens = ordenarLista(groupsWithExtra(lastGrouped)).map(g => {
     const base = (g.origem && g.origem[0]) || {};
     const campos = [...new Set((g.origem||[]).flatMap(o => o.campos || []))];
-    const extras = Object.assign({}, ...((g.origem||[]).map(o => o.extras || {})));
-    const bruto = Object.assign({}, ...((g.origem||[]).map(o => o.bruto || {}).reverse()));
+    // item consolidado leva TODOS os campos das linhas que o formaram: onde elas diferem
+    // (dois códigos de peça para a mesma arruela), sai a lista dos valores distintos
+    const extras = juntarCampos((g.origem||[]).map(o => o.extras));
+    const bruto = juntarCampos((g.origem||[]).map(o => o.bruto));
     return {
       item: base.item || "", qtd: g.qtd, especificacao: g.especificacao, descricao: g.descricao,
       material: g.material, massa: g.massa, ordem: g.ordem, fonte: base.fonte,
-      campos: campos.length ? campos : null, extras, bruto,
+      campos: campos.length ? campos : null, extras, bruto, medidas: medidasDoGrupo(g),
       // so sai "-" se nenhuma das linhas juntadas tinha massa; se uma tinha, a soma vale
       massaAusente: (g.origem||[]).length ? (g.origem||[]).every(o => o.massaAusente) : false
     };
@@ -2418,7 +3032,7 @@ function registrosDaLista(){
   const conjuntos = (linhasDeConjunto||[]).map(r => ({
     item: r.item||"", qtd: r.qtd, especificacao: r.especificacao, descricao: r.descricao,
     material: r.material, massa: r.massa, ordem: r.ordem, fonte: r.fonte,
-    campos: r.campos, extras: r.extras, bruto: r.bruto, massaAusente: r.massaAusente, conjunto:true
+    campos: r.campos, extras: r.extras, bruto: r.bruto, massaAusente: r.massaAusente, medidas: r.medidas, conjunto:true
   }));
   return ordenarLista([...itens, ...conjuntos]);
 }
@@ -2684,11 +3298,14 @@ function interpretacaoHtml(cls){
   if(cls.tipo==="chapa"){
     return cls.ok
       ? (cls.circular ? `e=${fmt(cls.thickness,2)}mm · Ø${fmt(cls.diametro,1)}mm` : `e=${fmt(cls.thickness,2)}mm · ${fmt(cls.width,1)}×${fmt(cls.height,1)}mm`)
+        + (cls.estimada ? ` <span class="pill-tag warn" title="A descrição só traz a espessura: a área da peça foi calculada pela ${cls.estimada==="massa"?"massa":"área do documento"} e o corte usa um quadrado com essa área.">≈ pela ${cls.estimada==="massa"?"massa":"área"}</span>`
+           : cls.areaRealM2 ? ` · A=${fmt(cls.areaRealM2,3)}m²` : "")
       : `<span class="pill-tag warn">revisar descrição</span>`;
   }
   if(cls.tipo==="barra"){
     return cls.ok
       ? `${escapeHtml(cls.identidade)} · L=${fmt(cls.length,1)}mm`
+        + (cls.estimada ? ` <span class="pill-tag warn" title="A descrição não traz o comprimento: ele foi calculado pela massa da peça dividida pela massa linear (kg/m).">≈ pela massa</span>` : "")
       : `<span class="pill-tag warn">revisar descrição</span>`;
   }
   return `<span style="color:var(--muted);">não entra na otimização de corte</span>`;
@@ -3054,7 +3671,8 @@ function renderChapasSection(grouped){
       b.pieces.push({w:cls.diametro, h:cls.diametro, qty:g.qtd, label:"Ø"+fmt(cls.diametro,0), diam:cls.diametro, circular:true});
     } else {
       b.hasRect = true;
-      b.pieces.push({w:cls.width, h:cls.height, qty:g.qtd, label:`${fmt(cls.width,0)}×${fmt(cls.height,0)}`, circular:false});
+      b.pieces.push({w:cls.width, h:cls.height, qty:g.qtd, label:`${fmt(cls.width,0)}×${fmt(cls.height,0)}`, circular:false,
+                     areaReal: cls.areaRealM2 > 0 ? cls.areaRealM2*1e6 : null});
     }
   });
 
@@ -3156,7 +3774,7 @@ function computeChapaGroup(b, idx, container){
 
   const totalPecas = b.pieces.reduce((s,p)=>s+p.qty,0);
   // área real das peças (não da chapa comercial) — usada no resumo em m²
-  const areaMm2 = b.pieces.reduce((s,p)=> s + (p.circular ? Math.PI*Math.pow(p.diam/2,2) : p.w*p.h) * p.qty, 0);
+  const areaMm2 = b.pieces.reduce((s,p)=> s + (p.areaReal || (p.circular ? Math.PI*Math.pow(p.diam/2,2) : p.w*p.h)) * p.qty, 0);
   lastChapaResults[idx] = {
     thickness:b.thickness, material:b.material, circular:b.hasCircular && !b.hasRect, fracLabel:b.fracLabel,
     comercialLabel:comercial.label, count:result.count, utilization:result.utilization,
@@ -3183,7 +3801,7 @@ function renderBarrasSection(grouped){
     // especificação original (ex: "Tubo", "Perfil Estrutural", "Cantoneira") — usada como
     // "título" curto nas planilhas que separam título de especificação/spec detalhada
     if(!b.especOriginal) b.especOriginal = g.especificacao;
-    b.pieces.push({len:cls.length, qty:g.qtd, label:fmt(cls.length,0)});
+    b.pieces.push({len:cls.length, qty:g.qtd, label:fmt(cls.length,0), continuo:cls.continuo});
   });
 
   els.barraGroups.innerHTML = "";
@@ -3266,7 +3884,21 @@ function computeBarraGroup(b, idx, container){
   if(!checked.length){ checked = BARRAS_COMERCIAIS; sizeChecks.forEach(c=>c.checked=true); }
   const kerf = parseFloat(kerfInput.value) || 0;
 
-  const result = cutStock1DMulti(b.pieces, checked, kerf);
+  // metragem corrida (comprimento total escrito): barras inteiras do maior tamanho marcado e
+  // a sobra como uma peça — a sobra ainda escolhe o melhor tamanho (6 m em vez de 12 m).
+  // A barra "inteira" desconta a perda de corte, senão ela não caberia na própria barra.
+  const maior = Math.max(...checked.map(c => c.len));
+  const pecas = [];
+  for(const p of b.pieces){
+    if(!p.continuo){ pecas.push(p); continue; }
+    const util = Math.max(1, maior - kerf);
+    const total = p.len * p.qty;
+    const inteiras = Math.floor(total / util + 1e-9);
+    const sobra = total - inteiras*util;
+    if(inteiras) pecas.push({len:util, qty:inteiras, label:"barra inteira"});
+    if(sobra > 0.5) pecas.push({len:sobra, qty:1, label:fmt(sobra,0)});
+  }
+  const result = cutStock1DMulti(pecas, checked, kerf);
 
   // resume os tamanhos comerciais realmente usados, ex: "7× 12 m + 1× 6 m"
   const counts = new Map();

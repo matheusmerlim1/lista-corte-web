@@ -4,6 +4,29 @@ Cole uma lista de materiais copiada do Excel (ou várias, somadas na mesma conso
 
 ## Novidades desta versão
 
+- **Escrever o item e a ferramenta separa as colunas**: no campo da seção 1 (texto sem tabulação = itens escritos, um por linha) ou no campo **"Escreva o item numa linha"** da seção 2 (Enter ou **+ Adicionar item**). Exemplo:
+  ```
+  TUBO Ø1.1/2'' SCH. 40 ASME B 36.10
+  Comprimento Total dos Tubos - 113,7 m
+  ```
+  vira Título **Tubo** · Especificação **Ø1.1/2" SCH.40** · Norma **ASME B36.10** · comprimento total **113,7 m**. Numa linha só também vale: `4 Chapa #1/4" (6,35 mm) x 100 x 200 mm AISI 316 massa unitária 1,1 kg`.
+  - Com rótulo vale o que foi dito: `Qtd: 4`, `Material: ...`, `Norma: ...`, `Massa 12 kg` (total) / `Massa unitária 1,1 kg`, `Comprimento total 113,7 m` / `Comprimento 6000 mm`, `Área total 3,2 m²`. Linha que começa com rótulo completa o item de cima.
+  - Sem rótulo, pelo formato: número no começo é a quantidade (`4 TUBO...`, `4x`, `4 pç`); ASME/ANSI B…, DIN, ISO, NBR, EN, MSS SP, API são norma; ASTM A…, AISI/SAE…, A36, A572, "aço carbono", "inox" são material; `- 113,7 m` no fim é comprimento total.
+  - O tipo são as primeiras palavras sem número ("TUBO" fica "Tubo", igual às listas); o resto é a especificação. Depois de adicionar, a tela mostra como cada item foi separado, para conferir.
+  - **Exemplo e palavras-chave ao lado de cada campo**: "Como escrever — exemplo e palavras-chave" (abre e fecha) mostra exemplos pintados com a cor de cada coluna, como eles ficam depois de separados, a tabela das palavras-chave e um botão **usar este exemplo**. Enquanto se escreve, a **prévia** mostra na hora como o item vai entrar na lista.
+  - **A unidade escrita manda**: `113.7 m` e `113,7 metros` são metros, `6000 mm` é milímetro; também valem `cm`, `km`, `pol`/`"`, `ft`, `mm²`/`cm²`/`m²`, `g`/`kg`/`t` — no texto escrito e nas células das planilhas ("600 cm", "500 g"). Sem unidade, comprimento total vale em m, comprimento de peça em mm, área em m², massa em kg — e a prévia avisa, em vermelho, o que foi suposto.
+  - **Comprimento total é metragem a comprar**, não uma peça: no corte vira barras inteiras do maior tamanho marcado + a sobra (113,7 m → 9 barras de 12 m + 1 de 6 m).
+- **LM com linha de conjunto soldado**: "Plataforma | Conjunto Soldado | 450,9 kg" não entra na soma (a massa é a das peças de baixo); volta na exportação no padrão do documento.
+- **Tubo retangular "240 x 120 x 6.35 mm"**: o 6,35 é a parede, não o comprimento. O comprimento sai pela massa ÷ massa linear da seção (2·t·(a+b) − 4·t²) e é marcado **≈ pela massa**.
+
+- **Qualquer formato de lista**: além das listas em português, a ferramenta reconhece a **BOM exportada do SolidWorks** (ITEM NO. · PART NUMBER · DESCRIPTION · Dimensions · Specification · Material · Treating_1 · QTY. · Mass · Area) e listas que **já vêm com os valores calculados** (Comprimento unitário · Área unitária · Massa unitária).
+  - **Quem é o tipo e quem é a medida** é decidido pelo conteúdo: com uma coluna de medidas (*Dimensions*, *Dimensões*, *Medidas*), ela é o detalhe, e o tipo é a coluna de texto que mais parece nome de peça ("CHAPA", "CANTONEIRA", "PARAFUSO SEXTAVADO"). A que sobra (a norma, "ISO 4017") e o tratamento entram no agrupamento — arruela DIN 25201 e DIN 25201-4 não se somam — e, nos itens soltos, aparecem junto da medida ("M6 x 20 · ISO 7380").
+  - **Massa por peça ou total**: "Massa unitária", "Mass"/"Weight" (SolidWorks) são por peça e são multiplicadas pela quantidade; "Massa"/"Peso" sozinhos continuam sendo o total da linha; "total" no título vale sempre como total.
+  - **Número com ponto ou vírgula**: o separador decimal é decidido pela coluna inteira ("0.089", "13.2", "8.912 kg", "2E-3" são decimais), e célula numérica do .xlsx é lida como número.
+  - **Valores já calculados valem mais**: o *Comprimento unitário* substitui o lido na descrição; a *Área unitária* é a área da peça no resumo em m² (uma chapa recortada de 500 × 500 com 0,089 m² conta 0,089). A *Area* do SolidWorks é a superfície inteira (duas faces + bordas) — a ferramenta confere com a massa e, quando é esse o caso, usa a área pela massa.
+  - **O que faltar na medida é completado**: chapa com a espessura só no código ("CHAPA-3-8IN" + "120mm x 230mm" → `#3/8" x 120mm x 230mm`) ou o tamanho só no código ("CHAPA-300x300"); chapa só com a espessura ("1/2\"") tem a área calculada pela massa e é marcada **≈ pela massa**; perfil só com a seção ("C4\" x 9,3 kg/m") tem o comprimento calculado por massa ÷ kg/m. Medidas em polegada, "kg/m" e "SCH.40" não são mais confundidas com o comprimento.
+  - **Devolver no padrão do documento traz todos os campos de entrada**: PART NUMBER, Dimensions, Treating_1, Area, Comprimento unitário… saem com o título original; massa, área e comprimento unitários voltam por peça. No consolidado, quando as linhas somadas têm valores diferentes num campo (dois códigos para a mesma porca), saem os dois, separados por "; ".
+
 - **Arrastar e soltar**: arraste o arquivo do Windows e solte em qualquer lugar da página. Cada arquivo solto é **somado** ao que já está carregado — solta um, vê o que veio nele, solta o próximo. Vale soltar vários de uma vez.
 - **Colunas reconhecidas pelo nome**: a ferramenta lê o cabeçalho e descobre onde estão Item, Qtd., Título, Especificação, Descrição, Material e Massa — **em qualquer ordem**. Listas com as colunas em posições diferentes se juntam na mesma consolidação sem embaralhar campo.
 - **Juntar tabelas diferentes**: se uma lista tem *Descrição* e outra tem *Especificação*, a lista final sai com **as duas colunas** (a união do que apareceu), e o item que não tinha aquele dado fica com **"-"**. Colunas fora do padrão (Norma, Fornecedor…) também viajam junto.
@@ -25,6 +48,11 @@ Cole uma lista de materiais copiada do Excel (ou várias, somadas na mesma conso
 `referencias/` como se viessem arrastadas do Windows e confere 11 pontos: contagem de itens,
 ordem igual à do documento, soma de listas sem apagar a anterior, linha de conjunto fora da
 lista de compra, união de colunas com "-", abas separadas/juntas e o arquivo gerado.
+
+`node tools/test_formatos.js` confere os outros formatos: solta a BOM do SolidWorks que estiver
+em `referencia/` (as 36 linhas entram, chapas e perfis interpretados, massa por peça, norma no
+agrupamento, todas as colunas na devolução) e lê uma lista com Comprimento/Área/Massa unitários.
+Os dois testes procuram Chrome ou Edge.
 
 Com as sete listas de referência soltas de uma vez: 47 linhas de dados nos documentos,
 47 linhas na exportação (7 abas), 37 itens depois do agrupamento e 5 linhas de conjunto.

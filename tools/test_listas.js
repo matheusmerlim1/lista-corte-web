@@ -9,7 +9,9 @@ const fs = require("fs"), os = require("os"), path = require("path");
 
 const RAIZ = path.join(__dirname, "..");
 const CHROME = ["C:/Program Files/Google/Chrome/Application/chrome.exe",
-  "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"].find(p => fs.existsSync(p));
+  "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+  "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+  "C:/Program Files/Microsoft/Edge/Application/msedge.exe"].find(p => fs.existsSync(p));
 const esperar = ms => new Promise(r => setTimeout(r, ms));
 
 (async () => {

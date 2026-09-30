@@ -33,13 +33,17 @@
     <h2>1 · Lista de materiais</h2>
     <p class="help">Copie as colunas <b>Item, Qtd, Especificação, Descrição, Material, Massa</b> de uma planilha (Excel/Sheets) — nessa ordem — e cole no campo abaixo (Ctrl+V), ou importe o arquivo <b>.xlsx</b> direto. A primeira linha pode ser o cabeçalho, tanto faz. <b>Mais de uma lista de material</b> pode ser carregada na mesma consolidação: escolha vários arquivos de uma vez, ou use os botões <b>➕ Somar</b> para juntar outra lista à que já está aberta — itens iguais vindos de arquivos diferentes viram um item só, com as quantidades somadas.</p>
     <div class="paste-box" id="pasteBox">
-      <textarea id="pasteArea" placeholder="Cole aqui os dados copiados da planilha — ou arraste o arquivo .xlsx para cá"></textarea>
+      <textarea id="pasteArea" placeholder="Cole aqui os dados copiados da planilha — ou arraste o arquivo .xlsx para cá — ou escreva os itens, um por linha:
+TUBO Ø1.1/2'' SCH. 40 ASME B 36.10
+Comprimento Total dos Tubos - 113,7 m"></textarea>
       <div class="paste-box__hint" aria-hidden="true">
         <div class="paste-box__icon">⬇</div>
         <div class="paste-box__txt">Solte a(s) lista(s) .xlsx aqui</div>
         <div class="paste-box__sub">as linhas são somadas ao que já está carregado</div>
       </div>
     </div>
+    <div class="wprev" id="pastePreview" aria-live="polite"></div>
+    <div id="pasteHelp"></div>
     <div class="row-actions">
       <button class="btn-primary" id="processBtn" type="button">Processar lista colada</button>
       <button class="btn-secondary" id="addPasteBtn" type="button" title="Soma o que está colado acima à consolidação atual, sem apagar as listas já carregadas.">➕ Somar lista colada</button>
@@ -110,8 +114,16 @@
         </div>
         <table class="data-table" id="groupedTable"></table>
       </div>
+      <div class="quick-item">
+        <input type="text" id="quickItemInput" class="quick-item__input" autocomplete="off"
+          placeholder="Escreva o item numa linha — ex.: 4 TUBO Ø1.1/2'' SCH. 40 ASME B 36.10 ASTM A106 Gr.B - Comprimento total 113,7 m"
+          title="Escreva tudo numa linha só: a ferramenta separa Título, Especificação, Norma, Material, Qtd, Comprimento/Área e Massa. Enter adiciona. Em branco, o botão cria uma linha vazia para preencher à mão.">
+        <div class="wprev" id="quickItemPreview" aria-live="polite"></div>
+        <div class="help quick-item__lido" id="quickItemStatus"></div>
+        <div id="quickItemHelp"></div>
+      </div>
       <div class="row-actions">
-        <button class="btn-secondary" id="addGroupedRowBtn" type="button">+ Adicionar item</button>
+        <button class="btn-secondary" id="addGroupedRowBtn" type="button" title="Com texto no campo acima, separa e adiciona o item; em branco, cria uma linha vazia.">+ Adicionar item</button>
         <button class="btn-primary" id="reprocessBtn" type="button">↻ Reagrupar</button>
         <button class="btn-secondary" id="exportXlsxBtn" type="button">⇩ Excel compactado + resumo de corte</button>
         <span class="status-msg" id="exportStatus"></span>
