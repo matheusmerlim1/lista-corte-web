@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="Cole uma lista de materiais do Excel, agrupe itens iguais e descubra quantas chapas e barras comerciais comprar, com o desenho de como distribuir o corte de cada uma.">
+<meta name="description" content="Cole uma lista de materiais do Excel ou leia direto dos PDFs dos desenhos, agrupe itens iguais e descubra quantas chapas e barras comerciais comprar, com o desenho de como distribuir o corte de cada uma.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E%E2%9C%82%EF%B8%8F%3C/text%3E%3C/svg%3E">
 <title>Lista &amp; Corte</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -31,14 +31,14 @@
 
   <section class="block">
     <h2>1 · Lista de materiais</h2>
-    <p class="help">Copie as colunas <b>Item, Qtd, Especificação, Descrição, Material, Massa</b> de uma planilha (Excel/Sheets) — nessa ordem — e cole no campo abaixo (Ctrl+V), ou importe o arquivo <b>.xlsx</b> direto. A primeira linha pode ser o cabeçalho, tanto faz. <b>Mais de uma lista de material</b> pode ser carregada na mesma consolidação: escolha vários arquivos de uma vez, ou use os botões <b>➕ Somar</b> para juntar outra lista à que já está aberta — itens iguais vindos de arquivos diferentes viram um item só, com as quantidades somadas.</p>
+    <p class="help">Copie as colunas <b>Item, Qtd, Especificação, Descrição, Material, Massa</b> de uma planilha (Excel/Sheets) — nessa ordem — e cole no campo abaixo (Ctrl+V), ou importe o arquivo <b>.xlsx</b> direto. A primeira linha pode ser o cabeçalho, tanto faz. Também dá para importar o <b>PDF do desenho</b>: a ferramenta procura sozinha a lista de material em todas as folhas — em qualquer lugar da folha, com o cabeçalho em cima ou embaixo — e tira os itens dela. Escolha vários PDFs de uma vez, ou uma <b>pasta inteira</b> (os PDFs e .xlsx das subpastas entram juntos). <b>Mais de uma lista de material</b> pode ser carregada na mesma consolidação: escolha vários arquivos de uma vez, ou use os botões <b>➕ Somar</b> para juntar outra lista à que já está aberta — itens iguais vindos de arquivos diferentes viram um item só, com as quantidades somadas.</p>
     <div class="paste-box" id="pasteBox">
-      <textarea id="pasteArea" placeholder="Cole aqui os dados copiados da planilha — ou arraste o arquivo .xlsx para cá — ou escreva os itens, um por linha:
+      <textarea id="pasteArea" placeholder="Cole aqui os dados copiados da planilha — ou arraste o arquivo .xlsx / .pdf (ou uma pasta) para cá — ou escreva os itens, um por linha:
 TUBO Ø1.1/2'' SCH. 40 ASME B 36.10
 Comprimento Total dos Tubos - 113,7 m"></textarea>
       <div class="paste-box__hint" aria-hidden="true">
         <div class="paste-box__icon">⬇</div>
-        <div class="paste-box__txt">Solte a(s) lista(s) .xlsx aqui</div>
+        <div class="paste-box__txt">Solte a(s) lista(s) .xlsx / .pdf ou uma pasta aqui</div>
         <div class="paste-box__sub">as linhas são somadas ao que já está carregado</div>
       </div>
     </div>
@@ -48,17 +48,22 @@ Comprimento Total dos Tubos - 113,7 m"></textarea>
       <button class="btn-primary" id="processBtn" type="button">Processar lista colada</button>
       <button class="btn-secondary" id="addPasteBtn" type="button" title="Soma o que está colado acima à consolidação atual, sem apagar as listas já carregadas.">➕ Somar lista colada</button>
       <label class="btn-secondary" id="xlsxLabel" style="cursor:pointer;" title="Substitui tudo o que está carregado. Dá pra escolher vários arquivos de uma vez.">
-        📂 Importar arquivo(s) .xlsx
-        <input type="file" id="xlsxInput" accept=".xlsx" multiple style="display:none;">
+        📂 Importar arquivo(s) .xlsx / .pdf
+        <input type="file" id="xlsxInput" accept=".xlsx,.pdf" multiple style="display:none;">
       </label>
       <label class="btn-secondary" id="xlsxAddLabel" style="cursor:pointer;" title="Soma outra(s) lista(s) à consolidação atual, sem apagar as já carregadas.">
-        ➕ Somar arquivo(s) .xlsx
-        <input type="file" id="xlsxAddInput" accept=".xlsx" multiple style="display:none;">
+        ➕ Somar arquivo(s) .xlsx / .pdf
+        <input type="file" id="xlsxAddInput" accept=".xlsx,.pdf" multiple style="display:none;">
+      </label>
+      <label class="btn-secondary" id="pastaLabel" style="cursor:pointer;" title="Lê todos os PDFs e planilhas .xlsx da pasta escolhida (e das subpastas) e substitui o que está carregado.">
+        📁 Importar pasta
+        <input type="file" id="pastaInput" webkitdirectory directory multiple style="display:none;">
       </label>
       <button class="btn-secondary" id="clearBtn" type="button">Limpar</button>
       <span class="status-msg" id="parseStatus"></span>
     </div>
-    <p class="help" style="margin-top:6px;">Também dá para <b>arrastar o arquivo do Windows e soltar no campo acima</b> (ou em qualquer lugar da página): ele é somado à consolidação.</p>
+    <p class="help" style="margin-top:6px;">Também dá para <b>arrastar o arquivo (ou a pasta) do Windows e soltar no campo acima</b> (ou em qualquer lugar da página): ele é somado à consolidação. O PDF precisa ter o texto selecionável (os exportados do CAD têm); PDF escaneado, só imagem, não tem texto para ler.</p>
+    <div id="importReport" class="import-report" hidden></div>
     <div id="sourcesWrap" class="sources-wrap" hidden>
       <span class="sources-label">Listas carregadas</span>
       <div id="sourcesList" class="sources-list"></div>
@@ -222,6 +227,7 @@ Comprimento Total dos Tubos - 113,7 m"></textarea>
   </footer>
 </div>
 
+<script src="pdf-bom.js"></script>
 <script src="app.js"></script>
 
 <!-- === Botao de volta ao portfolio - cole antes de </body> === -->

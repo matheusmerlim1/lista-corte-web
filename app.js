@@ -221,7 +221,7 @@ const COLUNAS_CONHECIDAS = [
   {campo:"item",         termos:["item no","item nº","item n","item", "pos.", "posicao", "posição", "ref"]},
   {campo:"qtd",          termos:["qtd","qtde","quant","quantidade","quantity","qty","q."]},
   {campo:"codigo",       termos:["part number","part no","part n","part","codigo","cod.","cod","p/n","pn","numero da peca"]},
-  {campo:"titulo",       termos:["titulo","título","denominacao","denominação","nome","tipo","componente"]},
+  {campo:"titulo",       termos:["titulo","título","title","denominacao","denominação","nome","name","part name","tipo","componente"]},
   {campo:"especificacao",termos:["especificacao","especificação","spec","specification","especificacoes","especificações"]},
   {campo:"descricao",    termos:["descricao","descrição","description","detalhe","observacao","observação"]},
   {campo:"dimensoes",    termos:["dimensoes","dimensions","dimension","dimensao","medidas","medida","size","tamanho"]},
@@ -849,7 +849,7 @@ function lerTabela(tabela, fonte, origemTipo){
       if(!String(titulo||"").trim()) return;
       extras["extra:" + normCabec(titulo)] = v==null ? "" : String(v).trim();
     });
-    if(suposta) problems.push(`Linha ${i+1}${origemTipo==="colagem"?"":" da planilha"}: quantidade em branco — entrou como 1, confira.`);
+    if(suposta) problems.push(`${origemTipo==="pdf" ? `${fonte}, linha ${i}` : `Linha ${i+1}`}${origemTipo==="planilha"?" da planilha":""}: quantidade em branco — entrou como 1, confira.`);
     parsed.push(buildRow(item, qtd, especificacao, descricao, material, massa, i+1, fonte, {
       secao: ehLinhaDeConjunto(item, descricao, material),
       campos: camposPresentes,
@@ -1307,6 +1307,25 @@ async function parseXlsxFile(arrayBuffer, fonte){
 
   const table = parseWorksheetTable(zipData[sheetPath], sharedStrings);
   return lerTabela(table, fonte, "planilha");
+}
+
+/* ---------------- leitura de PDF (lista de material do desenho) ---------------- */
+// A procura da tabela dentro do PDF fica em pdf-bom.js; aqui ela recebe o vocabulário de
+// colunas do app (o mesmo da planilha) e devolve uma tabela comum, que segue pelo lerTabela.
+function campoDoCabecalho(titulo){
+  return Object.keys(lerCabecalho([titulo]).mapa)[0] || null;
+}
+async function parsePdfFile(arrayBuffer, fonte, aoProgredir){
+  if(!window.PdfBom) throw new Error("o leitor de PDF (pdf-bom.js) não foi carregado.");
+  const lido = await window.PdfBom.lerListaDoPdf(new Uint8Array(arrayBuffer), campoDoCabecalho, aoProgredir);
+  if(lido.tabela.length <= 1){
+    if(lido.paginas && lido.semTexto.length === lido.paginas)
+      throw new Error("o PDF não tem texto selecionável (parece escaneado, só imagem) — não há o que ler.");
+    throw new Error(`nenhuma lista de material encontrada nas ${lido.paginas} folha(s) — procurei um cabeçalho com Item, Qtd e Descrição/Título/Especificação.`);
+  }
+  const r = lerTabela(lido.tabela, fonte, "pdf");
+  r.pdf = lido;
+  return r;
 }
 
 /* ---------------- escrita de arquivo .xlsx (sem bibliotecas externas) ---------------- */
@@ -2149,6 +2168,8 @@ const els = {
   clearBtn: document.getElementById("clearBtn"),
   xlsxInput: document.getElementById("xlsxInput"),
   xlsxAddInput: document.getElementById("xlsxAddInput"),
+  pastaInput: document.getElementById("pastaInput"),
+  importReport: document.getElementById("importReport"),
   addPasteBtn: document.getElementById("addPasteBtn"),
   sourcesWrap: document.getElementById("sourcesWrap"),
   sourcesList: document.getElementById("sourcesList"),
@@ -2226,6 +2247,9 @@ els.clearBtn.addEventListener("click", ()=>{
   els.pasteArea.value = "";
   els.xlsxInput.value = "";
   els.xlsxAddInput.value = "";
+  els.pastaInput.value = "";
+  els.importReport.hidden = true;
+  els.importReport.innerHTML = "";
   els.parseStatus.textContent = "";
   els.sourcesWrap.hidden = true;
   els.sourcesList.innerHTML = "";
@@ -2383,8 +2407,9 @@ function currentSources(){
 // duas listas não podem dividir o mesmo nome (senão não dá pra remover uma sem a outra) — o
 // mesmo arquivo carregado duas vezes vira "lista.xlsx (2)". `extra` são nomes já reservados
 // nesta mesma leva de arquivos, que ainda não estão carregados.
-function uniqueSourceLabel(base, extra){
-  const usados = new Set(currentSources().map(s=>s.label));
+function uniqueSourceLabel(base, extra, ignorarCarregadas){
+  // substituindo tudo, as listas já carregadas vão embora: o nome delas fica livre
+  const usados = new Set(ignorarCarregadas ? [] : currentSources().map(s=>s.label));
   if(extra) for(const e of extra) usados.add(e);
   if(!usados.has(base)) return base;
   let i = 2;
@@ -2574,40 +2599,76 @@ els.addPasteBtn.addEventListener("click", ()=> processarColagem(true));
 
 // lê os arquivos escolhidos (o seletor aceita vários de uma vez) e junta tudo numa leitura só —
 // um arquivo ilegível não derruba os outros, só entra na lista de problemas.
+const EXT_LIDAS = /\.(xlsx|pdf)$/i;
+const ehPdf = f => /\.pdf$/i.test(f.name);
+// nome que aparece para o arquivo: dentro de pasta, com o caminho a partir dela
+const nomeDoArquivo = f => f.caminho || f.webkitRelativePath || f.name;
+
+// relatório da leitura, arquivo por arquivo — sobretudo para PDF, em que a pessoa precisa
+// saber em quais folhas a lista foi achada e quais arquivos não tinham lista nenhuma
+function mostrarRelatorio(linhas){
+  if(!linhas.length){ els.importReport.hidden = true; els.importReport.innerHTML = ""; return; }
+  const ok = linhas.filter(l => l.ok).length;
+  els.importReport.hidden = false;
+  els.importReport.innerHTML = `<details${linhas.length <= 6 || ok < linhas.length ? " open" : ""}>
+      <summary>Leitura dos arquivos — ${ok} de ${linhas.length} com lista de material</summary>
+      <ul>${linhas.map(l => `<li class="${l.ok ? "ok" : "err"}"><b>${escapeHtml(l.nome)}</b> — ${escapeHtml(l.txt)}</li>`).join("")}</ul>
+    </details>`;
+}
+function resumoDoPdf(pdf, nLinhas){
+  const folhas = [...new Set(pdf.tabelas.map(t => t.pagina))];
+  const tabs = pdf.tabelas.length;
+  return `${tabs} tabela(s) de lista de material na(s) folha(s) ${folhas.join(", ")} de ${pdf.paginas} → ${nLinhas} linha(s)`;
+}
+
 async function importarArquivos(input, append){
   const files = [...input.files];
   try{ input.value = ""; }catch(e){}   // permite reescolher o mesmo arquivo depois
   if(!files.length) return;
-  els.parseStatus.textContent = files.length===1 ? `Lendo ${files[0].name}…` : `Lendo ${files.length} arquivos…`;
-  els.parseStatus.className = "status-msg";
+  const status = t => { els.parseStatus.textContent = t; els.parseStatus.className = "status-msg"; };
+  status(files.length===1 ? `Lendo ${nomeDoArquivo(files[0])}…` : `Lendo ${files.length} arquivos…`);
 
-  const rows = [], problems = [], lidos = [], repetidos = [];
+  const rows = [], problems = [], lidos = [], repetidos = [], relatorio = [];
   // substituindo tudo, os nomes já carregados não contam (vão embora); somando, contam. Os
   // arquivos desta mesma leva também precisam ser únicos entre si.
   const usados = new Set(append ? currentSources().map(s=>s.label) : []);
-  for(const file of files){
+  for(let i = 0; i < files.length; i++){
+    const file = files[i];
+    const nome = nomeDoArquivo(file);
+    const conta = files.length > 1 ? ` (${i+1} de ${files.length})` : "";
     try{
       const buf = await file.arrayBuffer();
       // o nome do arquivo é a "fonte" das linhas dele; nome repetido vira "(2)" pra as duas
       // listas continuarem removíveis uma sem a outra
-      const fonte = uniqueSourceLabel(file.name, usados);
+      const fonte = uniqueSourceLabel(file.name, usados, !append);
       if(fonte !== file.name) repetidos.push(file.name);
       usados.add(fonte);
-      const r = await parseXlsxFile(buf, fonte);
+      let r;
+      if(ehPdf(file)){
+        status(`Lendo ${nome}${conta}…`);
+        r = await parsePdfFile(buf, fonte, (pag, total) => status(`Lendo ${nome}${conta} — folha ${pag} de ${total}…`));
+        relatorio.push({nome, ok: true, txt: resumoDoPdf(r.pdf, r.rows.length)});
+      } else {
+        r = await parseXlsxFile(buf, fonte);
+        relatorio.push({nome, ok: r.rows.length > 0, txt: `${r.rows.length} linha(s)`});
+      }
       rows.push(...r.rows);
       problems.push(...r.problems);
       lidos.push(file.name);
     }catch(err){
-      problems.push(`${file.name}: ${err && err.message ? err.message : err}`);
+      const msg = err && err.message ? err.message : String(err);
+      problems.push(`${nome}: ${msg}`);
+      relatorio.push({nome, ok: false, txt: msg});
     }
   }
+  mostrarRelatorio(relatorio);
 
   if(!rows.length){
     els.parseStatus.textContent = "Não consegui ler nenhuma linha: " + problems.join(" | ");
     els.parseStatus.className = "status-msg err";
     return;
   }
-  const label = lidos.length===1 ? `arquivo "${lidos[0]}"` : `${lidos.length} arquivos (${lidos.join(", ")})`;
+  const label = lidos.length===1 ? `arquivo "${lidos[0]}"` : `${lidos.length} arquivos`;
   runPipeline(rows, problems, label, append);
   if(repetidos.length){
     els.parseStatus.textContent += `  Atenção: ${[...new Set(repetidos)].join(", ")} apareceu(ram) mais de uma vez — as linhas foram somadas de novo, e a lista repetida entrou como "(2)" em "Listas carregadas" (dá pra remover ali).`;
@@ -2616,23 +2677,66 @@ async function importarArquivos(input, append){
 /* ---------------- arrastar e soltar arquivos na página ---------------- */
 // Cada arquivo solto é SOMADO ao que já está carregado (a não ser que nada tenha sido lido
 // ainda): solta um, vê o que veio nele, solta o próximo, e assim por diante. Vale soltar
-// vários de uma vez também.
+// vários de uma vez, e também uma pasta inteira (os .pdf e .xlsx de dentro dela entram).
 async function importarSoltos(fileList){
-  const arquivos = [...fileList].filter(f => /\.xlsx$/i.test(f.name));
-  const ignorados = [...fileList].filter(f => !/\.xlsx$/i.test(f.name));
+  const arquivos = [...fileList].filter(f => EXT_LIDAS.test(f.name))
+    .sort((a, b) => nomeDoArquivo(a).localeCompare(nomeDoArquivo(b), "pt-BR", {numeric:true}));
+  const ignorados = [...fileList].filter(f => !EXT_LIDAS.test(f.name));
   if(!arquivos.length){
     els.parseStatus.textContent = ignorados.length
-      ? `Só leio .xlsx — ${ignorados.map(f=>f.name).join(", ")} não entrou.`
-      : "Nenhum arquivo reconhecido.";
+      ? `Só leio .xlsx e .pdf — ${ignorados.length} arquivo(s) não entrou(aram)${ignorados.length <= 5 ? ": " + ignorados.map(f=>f.name).join(", ") : ""}.`
+      : "Nenhum arquivo .xlsx ou .pdf encontrado.";
     els.parseStatus.className = "status-msg err";
     return;
   }
   const somar = lastGrouped.length > 0;            // já tem lista aberta: soma nela
   await importarArquivos({files: arquivos, value: ""}, somar);
   if(ignorados.length){
-    els.parseStatus.textContent += `  (${ignorados.map(f=>f.name).join(", ")} ignorado — só .xlsx.)`;
+    els.parseStatus.textContent += `  (${ignorados.length} arquivo(s) de outro tipo ignorado(s) — só .xlsx e .pdf.)`;
   }
 }
+
+// pasta solta na página: percorre as subpastas e devolve todos os arquivos de dentro
+async function arquivosDoArraste(dt){
+  const entradas = [...(dt.items || [])].map(it => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean);
+  if(!entradas.length || !entradas.some(e => e.isDirectory)) return [...dt.files];
+  const out = [];
+  const lerPasta = leitor => new Promise((ok, falha) => leitor.readEntries(ok, falha));
+  async function visitar(e, caminho){
+    if(e.isFile){
+      const f = await new Promise((ok, falha) => e.file(ok, falha));
+      try{ f.caminho = caminho + f.name; }catch(err){}
+      out.push(f);
+    } else if(e.isDirectory){
+      const leitor = e.createReader();
+      // readEntries devolve em lotes: chama até vir vazio
+      for(let lote = await lerPasta(leitor); lote.length; lote = await lerPasta(leitor)){
+        for(const filho of lote) await visitar(filho, caminho + e.name + "/");
+      }
+    }
+  }
+  for(const e of entradas) await visitar(e, "");
+  return out;
+}
+
+// botão "Importar pasta": todos os .pdf e .xlsx da pasta (e subpastas), substituindo o que
+// está carregado
+async function importarPasta(input){
+  const todos = [...input.files];
+  try{ input.value = ""; }catch(e){}
+  if(!todos.length) return;
+  const arquivos = todos.filter(f => EXT_LIDAS.test(f.name) && !/^~\$/.test(f.name))   // ~$ = arquivo temporário do Excel aberto
+    .sort((a, b) => nomeDoArquivo(a).localeCompare(nomeDoArquivo(b), "pt-BR", {numeric:true}));
+  if(!arquivos.length){
+    els.parseStatus.textContent = `Nenhum .pdf ou .xlsx na pasta escolhida (${todos.length} arquivo(s) de outro tipo).`;
+    els.parseStatus.className = "status-msg err";
+    return;
+  }
+  await importarArquivos({files: arquivos, value: ""}, false);
+  const outros = todos.length - arquivos.length;
+  if(outros) els.parseStatus.textContent += `  (${outros} arquivo(s) de outro tipo na pasta ignorado(s).)`;
+}
+els.pastaInput.addEventListener("change", ()=> importarPasta(els.pastaInput));
 
 (function ligarArrastarSoltar(){
   // O realce fica no campo de colar, nao numa camada sobre a pagina: assim o mesmo lugar
@@ -2659,7 +2763,13 @@ async function importarSoltos(fileList){
   window.addEventListener("drop", ev => {
     if(!temArquivo(ev)) return;
     ev.preventDefault(); dentro = 0; realcar(false);
-    importarSoltos(ev.dataTransfer.files);
+    // as entradas do arraste só valem durante o evento: a lista de pastas é pega aqui
+    arquivosDoArraste(ev.dataTransfer)
+      .then(importarSoltos)
+      .catch(err => {
+        els.parseStatus.textContent = "Não consegui ler o que foi solto: " + (err && err.message ? err.message : err);
+        els.parseStatus.className = "status-msg err";
+      });
   });
 })();
 
