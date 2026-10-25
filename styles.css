@@ -8,6 +8,10 @@
  * de corte, painel de pré-visualização, rodapé.
  */
 
+/* [hidden] vence qualquer display: sem isto, .sources-wrap{display:flex} mostrava o título
+   "Listas carregadas" com a lista vazia */
+[hidden]{display:none !important}
+
 :root{
     --bg:#FFFFFF; --surface:#FFFFFF; --surface-2:#F3F6F7;
     --ink:#16212B; --muted:#56697A; --border:#D2DBDF;
