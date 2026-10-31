@@ -25,6 +25,8 @@ function applyTheme(theme){
   document.documentElement.setAttribute("data-theme", theme);
   if(theme==="dark"){ themeIcon.textContent="☾"; themeText.textContent="Tela escura"; }
   else { themeIcon.textContent="☀"; themeText.textContent="Tela clara"; }
+  // o nome acessível começa pelo texto visível (WCAG 2.5.3) e diz o que o clique faz
+  themeBtn.setAttribute("aria-label", themeText.textContent + " — trocar para tela " + (theme==="dark" ? "clara" : "escura"));
 }
 applyTheme(readSavedTheme() || "light");
 themeBtn.addEventListener("click", ()=>{
@@ -2119,10 +2121,15 @@ function renderSheetSvg(sheet, sheetW, sheetH){
       }
     }
     if(p.overflow){
-      s += `<text class="piece-label" x="${(x+w/2).toFixed(1)}" y="${(y+h/2+16).toFixed(1)}" text-anchor="middle" font-size="9" fill="#B23A32">excede a chapa!</text>`;
+      s += `<text class="piece-label" x="${(x+w/2).toFixed(1)}" y="${(y+h/2+16).toFixed(1)}" text-anchor="middle" font-size="9" style="fill:var(--bad)">excede a chapa!</text>`;
     }
   });
-  return `<svg viewBox="0 0 ${W.toFixed(1)} ${H.toFixed(1)}" xmlns="http://www.w3.org/2000/svg">${s}</svg>`;
+  // o desenho é informativo: o leitor de tela recebe a lista de peças (medida × quantidade)
+  const cont = new Map();
+  sheet.placements.forEach(p => cont.set(p.label, (cont.get(p.label)||0) + 1));
+  const desc = `Desenho de corte da chapa: ${[...cont].map(([l,q]) => `${q}× ${l}`).join(", ")}`
+    + (sheet.placements.some(p => p.overflow) ? " — há peça que excede a chapa" : "");
+  return `<svg viewBox="0 0 ${W.toFixed(1)} ${H.toFixed(1)}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHtml(desc)}">${s}</svg>`;
 }
 
 function renderBarSvg(bar, barLength){
@@ -2144,7 +2151,9 @@ function renderBarSvg(bar, barLength){
     s += `<rect x="${x.toFixed(1)}" y="0.5" width="${(restW-1).toFixed(1)}" height="${H-1}" fill="none" stroke="var(--border)" stroke-dasharray="3,3"/>`;
     if(restW>34) s += `<text class="waste-label" x="${(x+restW/2).toFixed(1)}" y="${H/2+3}" text-anchor="middle">sobra ${fmt(barLength-bar.used,0)}</text>`;
   }
-  return `<svg viewBox="0 0 ${W.toFixed(1)} ${H}" xmlns="http://www.w3.org/2000/svg">${s}</svg>`;
+  const desc = `Cortes da barra (mm): ${bar.cuts.map(c => fmt(c.len,0)).join(", ")}`
+    + (restW>2 && !bar.cuts.some(c=>c.overflow) ? `; sobra ${fmt(barLength-bar.used,0)}` : "");
+  return `<svg viewBox="0 0 ${W.toFixed(1)} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHtml(desc)}">${s}</svg>`;
 }
 
 /* ---------------- tamanhos comerciais ---------------- */
@@ -2422,7 +2431,7 @@ function renderSources(){
   els.sourcesList.innerHTML = fontes.map(s=>`
     <span class="source-chip" data-source="${escapeHtml(s.label)}">
       <b>${escapeHtml(s.label)}</b><span class="source-n">${s.n} linha(s)</span>
-      <button class="btn-icon" type="button" data-source-del title="Remover esta lista da consolidação">🗑</button>
+      <button class="btn-icon" type="button" data-source-del aria-label="Remover a lista ${escapeHtml(s.label)}" title="Remover esta lista da consolidação"><span aria-hidden="true">🗑</span></button>
     </span>`).join("");
 }
 // tira da consolidação todas as linhas que vieram de uma lista, sem tocar nas outras
@@ -3247,7 +3256,8 @@ function renderPreviewSheet(aba, i, total){
   const resumo = `${aba.headers.length} coluna(s) · ${aba.rows.length} linha(s)`;
   let html = `<div class="preview-page"><h4>${escapeHtml(titulo)}<span class="preview-count">${resumo}</span></h4>`;
   if(aba.nota) html += `<p class="help" style="margin:-4px 0 8px;">${escapeHtml(aba.nota)}</p>`;
-  html += `<div class="table-wrap"><table class="data-table"><thead><tr>`;
+  // a tabela pode rolar na horizontal: o contêiner recebe foco para rolar pelo teclado
+  html += `<div class="table-wrap" tabindex="0" role="region" aria-label="${escapeHtml(titulo)}"><table class="data-table"><thead><tr>`;
   html += aba.headers.map(h => `<th>${escapeHtml(String(h))}</th>`).join("");
   html += `</tr></thead><tbody>`;
   for(const linha of aba.rows){
@@ -3446,7 +3456,7 @@ function renderGroupedTable(grouped){
     <th class="num">Qtd</th>
     <th class="num" title="Porcentagem a mais pedida deste item (folga/perda de obra): 100 un com 10% viram 110 un.">Extra %</th>
     <th class="num" title="Qtd + Extra % — é esta quantidade que sai nas exportações e na otimização de corte.">Qtd final</th>
-    <th class="num">Massa (kg)</th><th>Interpretação</th><th></th>
+    <th class="num">Massa (kg)</th><th>Interpretação</th><th><span class="sr-only">Ações</span></th>
   </tr></thead><tbody>`;
   grouped.forEach((g,idx)=>{
     const cls = classifyGroup(g);
@@ -3456,18 +3466,21 @@ function renderGroupedTable(grouped){
     else tagHtml = `<span class="pill-tag outro">Outro</span>`;
     const nOrig = (g.origem||[]).length;
     const aberto = openOrigem.has(idx);
+    // a tabela não tem rótulo visível por célula (o cabeçalho da coluna faz esse papel);
+    // o leitor de tela recebe coluna + número da linha
+    const n = idx+1;
     html += `<tr data-idx="${idx}"${aberto?' class="has-origem-open"':''}>
-      <td>${tagHtml}<br><input class="cell-input" data-field="especificacao" value="${escapeHtml(g.especificacao)}"></td>
-      <td><input class="cell-input" data-field="descricao" value="${escapeHtml(g.descricao)}"></td>
-      <td><input class="cell-input" data-field="material" value="${escapeHtml(g.material)}"></td>
-      <td class="num"><input class="cell-input num" data-field="qtd" value="${fmtQtd(g.qtd)}"></td>
-      <td class="num"><input class="cell-input num extra" data-field="extraPct" value="${fmtPct(extraPctOf(g))}" placeholder="0" title="Deixe em branco (ou 0) para não pedir extra deste item."></td>
+      <td>${tagHtml}<br><input class="cell-input" data-field="especificacao" aria-label="Especificação, linha ${n}" value="${escapeHtml(g.especificacao)}"></td>
+      <td><input class="cell-input" data-field="descricao" aria-label="Descrição, linha ${n}" value="${escapeHtml(g.descricao)}"></td>
+      <td><input class="cell-input" data-field="material" aria-label="Material, linha ${n}" value="${escapeHtml(g.material)}"></td>
+      <td class="num"><input class="cell-input num" data-field="qtd" aria-label="Qtd, linha ${n}" value="${fmtQtd(g.qtd)}"></td>
+      <td class="num"><input class="cell-input num extra" data-field="extraPct" aria-label="Extra %, linha ${n}" value="${fmtPct(extraPctOf(g))}" placeholder="0" title="Deixe em branco (ou 0) para não pedir extra deste item."></td>
       <td class="num" data-extra-final>${extraFinalHtml(g)}</td>
-      <td class="num"><input class="cell-input num" data-field="massa" value="${fmt(g.massa,2)}"></td>
+      <td class="num"><input class="cell-input num" data-field="massa" aria-label="Massa (kg), linha ${n}" value="${fmt(g.massa,2)}"></td>
       <td data-interpret>${interpretacaoHtml(cls)}</td>
       <td><div class="cell-actions">
-        <button class="btn-icon btn-origem${aberto?" open":""}" type="button" data-origem-toggle title="${aberto?"Fechar":"Ver e editar"} os itens que formaram este item agrupado">${aberto?"▾":"⧉"} ${nOrig}</button>
-        <button class="btn-icon" type="button" data-del title="Remover item">🗑</button>
+        <button class="btn-icon btn-origem${aberto?" open":""}" type="button" data-origem-toggle aria-expanded="${aberto}" aria-label="${nOrig} itens de origem da linha ${n} — ${aberto?"fechar":"ver e editar"}" title="${aberto?"Fechar":"Ver e editar"} os itens que formaram este item agrupado"><span aria-hidden="true">${aberto?"▾":"⧉"}</span> ${nOrig}</button>
+        <button class="btn-icon" type="button" data-del aria-label="Remover item da linha ${n}" title="Remover item"><span aria-hidden="true">🗑</span></button>
       </div></td>
     </tr>`;
     if(aberto){
@@ -3504,20 +3517,21 @@ function renderOrigemPanel(g, idx){
   // todas elas) — aí o nome da lista aparece junto, embaixo.
   const multi = currentSources().length > 1;
   const rows = members.map((m,oi)=>{
+    const on = `, linha de origem ${oi+1}`;
     const differs = normalizeText(m.especificacao)!==normalizeText(g.especificacao)
       || normalizeText(m.descricao)!==normalizeText(g.descricao)
       || normalizeMaterial(m.material)!==normalizeMaterial(g.material);
     return `<tr data-oidx="${oi}">
       <td class="origem-src" title="${escapeHtml((m.fonte || FONTE_MANUAL) + (m.linha ? ", linha "+m.linha : ""))}">${m.linha ? "L"+m.linha : "—"}${multi ? `<div class="origem-fonte">${escapeHtml(m.fonte || FONTE_MANUAL)}</div>` : ""}</td>
-      <td><input class="cell-input" data-ofield="item" value="${escapeHtml(m.item||"")}"></td>
-      <td><input class="cell-input" data-ofield="especificacao" value="${escapeHtml(m.especificacao||"")}"></td>
-      <td><input class="cell-input" data-ofield="descricao" value="${escapeHtml(m.descricao||"")}"></td>
-      <td><input class="cell-input" data-ofield="material" value="${escapeHtml(m.material||"")}"></td>
-      <td class="num"><input class="cell-input num" data-ofield="qtd" value="${fmtQtd(m.qtd)}"></td>
-      <td class="num"><input class="cell-input num" data-ofield="massa" value="${fmt(m.massa,2)}"></td>
+      <td><input class="cell-input" data-ofield="item" aria-label="Item${on}" value="${escapeHtml(m.item||"")}"></td>
+      <td><input class="cell-input" data-ofield="especificacao" aria-label="Especificação${on}" value="${escapeHtml(m.especificacao||"")}"></td>
+      <td><input class="cell-input" data-ofield="descricao" aria-label="Descrição${on}" value="${escapeHtml(m.descricao||"")}"></td>
+      <td><input class="cell-input" data-ofield="material" aria-label="Material${on}" value="${escapeHtml(m.material||"")}"></td>
+      <td class="num"><input class="cell-input num" data-ofield="qtd" aria-label="Qtd${on}" value="${fmtQtd(m.qtd)}"></td>
+      <td class="num"><input class="cell-input num" data-ofield="massa" aria-label="Massa (kg)${on}" value="${fmt(m.massa,2)}"></td>
       <td><div class="cell-actions">
         <span data-odiff>${differs?ORIGEM_DIFF_TAG:""}</span>
-        <button class="btn-icon" type="button" data-odel title="Remover esta linha de origem">🗑</button>
+        <button class="btn-icon" type="button" data-odel aria-label="Remover linha de origem ${oi+1}" title="Remover esta linha de origem"><span aria-hidden="true">🗑</span></button>
       </div></td>
     </tr>`;
   }).join("");
@@ -3525,7 +3539,7 @@ function renderOrigemPanel(g, idx){
   return `<div class="origem-panel">${head}
     <div class="table-wrap"><table class="data-table origem-table"><thead><tr>
       <th title="Linha da planilha / do texto colado">Linha</th><th>Item</th><th>Especificação</th><th>Descrição</th><th>Material</th>
-      <th class="num">Qtd</th><th class="num">Massa (kg)</th><th></th>
+      <th class="num">Qtd</th><th class="num">Massa (kg)</th><th><span class="sr-only">Ações</span></th>
     </tr></thead><tbody>${rows}</tbody></table></div>
     <div class="origem-foot">
       <span class="origem-sum" data-origem-sum>${origemSumLabel(g)}</span>
@@ -3688,18 +3702,25 @@ els.groupedTable.addEventListener("change", (ev)=>{
   if(applyTotalsToOrigem(g) && openOrigem.has(idx)) refreshOrigemPanel(idx);
 });
 
+function focarToggleOrigem(idx){
+  const b = els.groupedTable.querySelector(`tr[data-idx="${idx}"] button[data-origem-toggle]`);
+  if(b) b.focus();
+}
 els.groupedTable.addEventListener("click", (ev)=>{
   const toggle = ev.target.closest("button[data-origem-toggle]");
   if(toggle){
     const idx = parseInt(toggle.closest("tr[data-idx]").dataset.idx, 10);
     if(openOrigem.has(idx)) openOrigem.delete(idx); else openOrigem.add(idx);
     renderGroupedTable(lastGrouped);
+    focarToggleOrigem(idx);   // a tabela é redesenhada: sem isto o foco do teclado caía no <body>
     return;
   }
   const close = ev.target.closest("button[data-origem-close]");
   if(close){
-    openOrigem.delete(parseInt(close.closest("tr[data-origem-for]").dataset.origemFor, 10));
+    const idxFechado = parseInt(close.closest("tr[data-origem-for]").dataset.origemFor, 10);
+    openOrigem.delete(idxFechado);
     renderGroupedTable(lastGrouped);
+    focarToggleOrigem(idxFechado);
     return;
   }
   const add = ev.target.closest("button[data-origem-add]");
@@ -3749,8 +3770,11 @@ els.groupedToggleBtn.addEventListener("click", ()=>{
   els.groupedToggleBtn.textContent = els.groupedBody.hidden ? "▸ Expandir" : "▾ Minimizar";
 });
 
+// aspas também: o valor vai em atributo (value="…", title="…") e polegada se escreve com ";
+// sem isto, "#1/4\" x 300" cortava o value do input no meio e o resto virava atributo solto
 function escapeHtml(s){
-  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 }
 
 /* ---------------- seção de chapas ---------------- */
@@ -3826,12 +3850,12 @@ function buildChapaGroupCard(b, idx){
       <div class="group-meta">${totalQty} peça(s), ${b.pieces.length} tamanho(s) distinto(s) de ${shapeLabel}</div>
       <div class="group-controls">
         <div>
-          <label>Chapa comercial</label><br>
-          <select data-chapa-sel="${idx}">${optionsHtml}</select>
+          <label for="chapaSel${idx}">Chapa comercial</label><br>
+          <select id="chapaSel${idx}" data-chapa-sel="${idx}">${optionsHtml}</select>
         </div>
         <div>
-          <label>Perda de corte (mm)</label><br>
-          <input type="number" data-chapa-kerf="${idx}" value="3" min="0" step="0.5" style="width:56px;">
+          <label for="chapaKerf${idx}">Perda de corte (mm)</label><br>
+          <input type="number" id="chapaKerf${idx}" data-chapa-kerf="${idx}" value="3" min="0" step="0.5" style="width:56px;">
         </div>
       </div>
       <div class="result-summary" data-chapa-summary="${idx}"></div>
@@ -3943,7 +3967,7 @@ function buildBarraGroupCard(b, idx){
   // por padrão, todos os comprimentos comerciais ficam habilitados — permite fechar a
   // última barra num tamanho menor em vez de desperdiçar quase uma barra inteira maior.
   const checksHtml = BARRAS_COMERCIAIS.map((c,ci)=>
-    `<label style="font-weight:400; text-transform:none; letter-spacing:0; font-size:13px; display:inline-flex; align-items:center; gap:4px; margin-right:12px;">
+    `<label style="font-weight:400; text-transform:none; letter-spacing:0; font-size:13px; display:inline-flex; align-items:center; gap:4px; margin-right:12px; min-height:24px;">
       <input type="checkbox" data-barra-size="${idx}" value="${ci}" checked> ${c.label}
     </label>`).join("");
 
@@ -3956,12 +3980,12 @@ function buildBarraGroupCard(b, idx){
       <div class="group-meta">${totalQty} peça(s), ${b.pieces.length} comprimento(s) distinto(s)</div>
       <div class="group-controls">
         <div>
-          <label>Barras comerciais permitidas</label><br>
-          ${checksHtml}
+          <span class="rotulo" id="barraTam${idx}">Barras comerciais permitidas</span><br>
+          <div role="group" aria-labelledby="barraTam${idx}" style="display:inline">${checksHtml}</div>
         </div>
         <div>
-          <label>Perda de corte (mm)</label><br>
-          <input type="number" data-barra-kerf="${idx}" value="3" min="0" step="0.5" style="width:56px;">
+          <label for="barraKerf${idx}">Perda de corte (mm)</label><br>
+          <input type="number" id="barraKerf${idx}" data-barra-kerf="${idx}" value="3" min="0" step="0.5" style="width:56px;">
         </div>
       </div>
       <div class="result-summary" data-barra-summary="${idx}"></div>
